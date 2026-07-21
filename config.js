@@ -16,13 +16,3 @@ const FIREBASE_CONFIG = {
   messagingSenderId: "붙여넣기",
   appId: "붙여넣기"
 };
-
-/* ─────────────────────────────────────────────────────────────
-   Mapillary 토큰 붙여넣는 곳 (실제 거리 사진 자동 로드용, 무료)
-   1) https://www.mapillary.com 가입 (무료)
-   2) https://www.mapillary.com/dashboard/developers → "Register application"
-      (이름/설명 아무거나, 콜백 URL: https://leesu1026.github.io/plonkle)
-   3) 생성된 앱의 "Client Token" (MLY| 로 시작) 을 아래에 붙여넣기
-   ※ 안 넣으면 위키백과 사진/일러스트로 대체됩니다.
-──────────────────────────────────────────────────────────────*/
-const MAPILLARY_TOKEN = "붙여넣기";

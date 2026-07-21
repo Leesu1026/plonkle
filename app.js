@@ -272,17 +272,19 @@ function resetMapForRound(){
 
 /* ═══════════ 게임 상태 ═══════════ */
 let G=null,timerInt=null;
+// 실사 확보 가능한 트릭만 출제 대상 (커먼즈 카테고리 있음 or 국기)
+const POOL=TRICKS.filter(t=>t.v.t==="flag"||(typeof COMMONS!=="undefined"&&COMMONS[t.id]));
 function getRecent(){try{return JSON.parse(localStorage.getItem("plk_recent")||"[]");}catch(e){return[];}}
 function pushRecent(ids){try{localStorage.setItem("plk_recent",JSON.stringify([...ids,...getRecent()].slice(0,60)));}catch(e){}}
 function pickTricks(rng,avoidRecent){
-  let pool=[...TRICKS.keys()];
+  let pool=[...POOL.keys()];
   if(avoidRecent){const rec=new Set(getRecent());
     const f=pool.filter(i=>!rec.has(TRICKS[i].id));
     if(f.length>=40)pool=f;}
   shuffle(pool,rng);
   const chosen=[],cats=new Set();
-  for(const i of pool){const tr=TRICKS[i];if(cats.has(tr.cat))continue;chosen.push(tr);cats.add(tr.cat);if(chosen.length===5)break;}
-  let j=0;while(chosen.length<5&&j<pool.length){const tr=TRICKS[pool[j++]];if(!chosen.includes(tr))chosen.push(tr);}
+  for(const i of pool){const tr=POOL[i];if(cats.has(tr.cat))continue;chosen.push(tr);cats.add(tr.cat);if(chosen.length===5)break;}
+  let j=0;while(chosen.length<5&&j<pool.length){const tr=POOL[pool[j++]];if(!chosen.includes(tr))chosen.push(tr);}
   return chosen;
 }
 function startGame(mode,seed){
@@ -296,62 +298,50 @@ function startGame(mode,seed){
   $("dock").classList.add("hidden");$("ov-final").classList.add("hidden");
   startRound();
 }
-/* ── 실물 사진 파이프라인 ──
-   우선순위: img/<id>.jpg → Mapillary(정답 좌표 주변의 실제 거리 사진) → 위키백과 → SVG
-   ※ 예전의 '커먼즈 텍스트 검색'은 엉뚱한 사진(예: 일본 사진이 프랑스 문제에)을
-      반환하는 치명적 오류가 있어 완전히 제거했습니다.
-      Mapillary는 정답 좌표의 bbox 안에서 촬영된 사진만 주므로 오답 사진이 원천 차단됩니다. */
-if(localStorage.getItem("plk_v")!=="2"){
-  Object.keys(localStorage).forEach(k=>{if(k.indexOf("plk_img_")===0)localStorage.removeItem(k);});
-  localStorage.setItem("plk_v","2");
+/* ── 실물 사진 파이프라인 (정확도 우선: 커먼즈 국가별 카테고리) ──
+   각 트릭 = 사람이 분류한 커먼즈 카테고리의 실사. 국기는 실물 국기 이미지.
+   실사를 못 구하는 트릭은 아예 출제되지 않음(TRICKS 로드 시 필터). */
+if(localStorage.getItem("plk_v")!=="3"){
+  Object.keys(localStorage).forEach(k=>{if(k.indexOf("plk_")===0&&k!=="plk_nick"&&k!=="plk_lang")localStorage.removeItem(k);});
+  localStorage.setItem("plk_v","3");
 }
-const photoPick={};
-function mapillaryReady(){return typeof MAPILLARY_TOKEN!=="undefined"&&MAPILLARY_TOKEN&&!/붙여넣기/.test(MAPILLARY_TOKEN);}
-function mapillaryFor(tr,grow){
-  if(!mapillaryReady())return Promise.resolve(null);
-  const span=Math.min(2.2,Math.max(0.12,tr.r0/111))*(grow||1);
-  const bbox=[tr.tgt[1]-span,tr.tgt[0]-span*0.7,tr.tgt[1]+span,tr.tgt[0]+span*0.7].join(",");
-  const url="https://graph.mapillary.com/images?access_token="+encodeURIComponent(MAPILLARY_TOKEN)
-    +"&fields=id,thumb_1024_url&limit=30&bbox="+bbox;
-  return fetch(url).then(r=>r.ok?r.json():null).then(j=>{
-    const arr=(j&&j.data||[]).map(x=>x.thumb_1024_url).filter(Boolean);
-    if(!arr.length)return grow?null:mapillaryFor(tr,3);
-    return arr[Math.floor(Math.random()*arr.length)];
-  }).catch(()=>null);
+const catCache={};
+function commonsCategoryImages(cat){
+  if(catCache[cat])return catCache[cat];
+  const url="https://commons.wikimedia.org/w/api.php?action=query&format=json&origin=*"
+    +"&generator=categorymembers&gcmtype=file&gcmlimit=60"
+    +"&gcmtitle="+encodeURIComponent("Category:"+cat)
+    +"&prop=imageinfo&iiprop=url|mime&iiurlwidth=1100";
+  const p=fetch(url).then(r=>r.ok?r.json():null).then(j=>{
+    const pages=j&&j.query&&j.query.pages?Object.values(j.query.pages):[];
+    const urls=pages.filter(pg=>pg.imageinfo&&pg.imageinfo[0]
+        &&/^image\/(jpeg|png|webp)/.test(pg.imageinfo[0].mime||"")
+        &&!/\.svg/i.test(pg.imageinfo[0].url||""))
+      .map(pg=>pg.imageinfo[0].thumburl||pg.imageinfo[0].url);
+    return urls;
+  }).catch(()=>[]);
+  catCache[cat]=p;return p;
 }
-function loadWikiPhoto(tr){
-  const t=(typeof WIKI!=="undefined")&&WIKI[tr.id];
-  if(!t)return Promise.resolve(null);
-  let lang="en",title=t;const m=t.match(/^([a-z]{2}):(.+)$/);if(m){lang=m[1];title=m[2];}
-  return fetch("https://"+lang+".wikipedia.org/api/rest_v1/page/summary/"+encodeURIComponent(title))
-    .then(r=>r.ok?r.json():null)
-    .then(j=>j&&((j.originalimage&&j.originalimage.source)||(j.thumbnail&&j.thumbnail.source))||null)
-    .catch(()=>null);
+function trickPhotoUrls(tr){
+  if(tr.v.t==="flag")return Promise.resolve(["https://flagcdn.com/w320/"+tr.v.code+".png"]);
+  const cat=(typeof COMMONS!=="undefined")&&COMMONS[tr.id];
+  if(!cat)return Promise.resolve([]);
+  return commonsCategoryImages(cat);
 }
-function photoPromise(tr){
-  if(photoPick[tr.id])return photoPick[tr.id];
-  const p=new Promise(res=>{
-    const local=new Image();
-    local.onload=()=>res({url:"img/"+tr.id+".jpg",credit:null});
-    local.onerror=()=>{
-      mapillaryFor(tr).then(u=>{
-        if(u)return res({url:u,credit:"Mapillary"});
-        loadWikiPhoto(tr).then(w=>res(w?{url:w,credit:"Wikimedia Commons"}:null));
-      });
-    };
-    local.src="img/"+tr.id+".jpg";
-  });
-  photoPick[tr.id]=p;return p;
+function loadImg(url){return new Promise((res,rej)=>{const im=new Image();
+  im.referrerPolicy="no-referrer";im.onload=()=>res(im);im.onerror=rej;im.src=url;});}
+const photoReady={}; // trickId -> Promise<[loadedUrl,...]> (verified loadable)
+function preparePhotos(tr){
+  if(photoReady[tr.id])return photoReady[tr.id];
+  const local="img/"+tr.id+".jpg";
+  const p=loadImg(local).then(()=>[local]).catch(()=>
+    trickPhotoUrls(tr).then(list=>{
+      // verify first few actually load; shuffle for variety
+      const arr=[...list];for(let i=arr.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[arr[i],arr[j]]=[arr[j],arr[i]];}
+      return arr.slice(0,10);
+    }));
+  photoReady[tr.id]=p;return p;
 }
-/* 단서 칩: 실제 사진 위에 '코드형 단서'를 함께 표시 */
-function clueText(tr){const v=tr.v;
-  if(v.t==="tld")return "🔎 "+v.url;
-  if(v.t==="phone")return "🔎 "+(v.sub?v.sub+" · ":"")+v.num;
-  if(v.t==="plate")return "🔎 "+v.text+(v.region?" · "+v.region:"");
-  if(v.t==="lang")return "🔎 "+v.big;
-  return null;}
-function addClue(inner,tr){const c=clueText(tr);if(!c)return;
-  const d=document.createElement("div");d.className="clue-chip";d.textContent=c;inner.appendChild(d);}
 /* 이미지 확대/축소/이동 */
 let exZoom={s:1,x:0,y:0};
 function exApply(){const el=$("ex-inner");if(el)el.style.transform="translate("+exZoom.x+"px,"+exZoom.y+"px) scale("+exZoom.s+")";}
@@ -361,32 +351,37 @@ function setExhibit(tr){
   const inner=$("ex-inner"),hint=$("exhibit-hint");
   exReset();
   if(hint)hint.textContent=tt("exhibitHint");
-  if(tr.v.t==="flag"){inner.innerHTML=renderTrick(tr);return;} // 국기는 실물 국기 이미지 즉시 표시
+  if(tr.v.t==="flag"){inner.innerHTML=renderTrick(tr);return;}
   inner.innerHTML='<div class="ex-loading"><div class="spinner"></div></div>';
-  let done=false;
-  const showSvg=()=>{if(done||!G||G.tricks[G.round]!==tr)return;done=true;
-    inner.innerHTML=renderTrick(tr);};
-  const showPhoto=(r)=>{
+  preparePhotos(tr).then(urls=>{
     if(!G||G.tricks[G.round]!==tr)return;
-    const im=new Image();
-    im.onload=()=>{if(!G||G.tricks[G.round]!==tr)return;done=true;
-      inner.innerHTML="";im.className="photo";inner.appendChild(im);addClue(inner,tr);
-      if(hint)hint.textContent=(r.credit?"📷 "+r.credit+" · ":"")+tt("exhibitHint");};
-    im.onerror=()=>{if(!done)showSvg();};
-    im.referrerPolicy="no-referrer";im.src=r.url;
-  };
-  photoPromise(tr).then(r=>{r?showPhoto(r):showSvg();});
-  setTimeout(()=>{if(!done)showSvg();},5000); // 5초 내 사진 실패 시 일러스트 (사진이 늦게 오면 사진으로 교체됨)
-  if(G&&G.round<4)photoPromise(G.tricks[G.round+1]); // 다음 라운드 사진 미리 로드 → 즉시 표시
+    tryShow(tr,urls,0,inner,hint);
+  });
+  if(G&&G.round<4)preparePhotos(G.tricks[G.round+1]); // prefetch
 }
-function startRound(){
-  const tr=G.tricks[G.round];G.submitted=false;
-  $("hud-round").textContent=G.round+1;
-  $("hud-score").textContent=G.total;
-  $("exhibit-cat").textContent="EXHIBIT · "+(CATS[tr.cat][LANG]||CATS[tr.cat].en);
-  setExhibit(tr);
-  resetMapForRound();
-  if(G.mode==="battle")startBattleTimer();
+function tryShow(tr,urls,i,inner,hint){
+  if(!G||G.tricks[G.round]!==tr)return;
+  if(!urls||i>=urls.length){ // 실사 없음 → 이 라운드 스킵(다음 트릭으로 교체)
+    inner.innerHTML='<div class="ex-loading dim" style="font-size:13px">실사를 찾는 중…</div>';
+    return replaceCurrentTrick();
+  }
+  loadImg(urls[i]).then(im=>{
+    if(!G||G.tricks[G.round]!==tr)return;
+    im.className="photo";inner.innerHTML="";inner.appendChild(im);
+    if(hint)hint.textContent="📷 Wikimedia Commons · "+tt("exhibitHint");
+  }).catch(()=>tryShow(tr,urls,i+1,inner,hint));
+}
+function replaceCurrentTrick(){
+  // 현재 라운드 트릭을 실사 있는 다른 트릭으로 교체 (중복/이미 등장 제외)
+  const used=new Set(G.tricks.map(t=>t.id));
+  const cands=POOL.filter(t=>!used.has(t.id));
+  for(let k=cands.length-1;k>0;k--){const j=Math.floor(Math.random()*(k+1));[cands[k],cands[j]]=[cands[j],cands[k]];}
+  const pick=cands[0];
+  if(!pick){ // 정말 없으면 그냥 일러스트로
+    const tr=G.tricks[G.round];$("ex-inner").innerHTML=renderTrick(tr);return;}
+  G.tricks[G.round]=pick;
+  $("exhibit-cat").textContent="EXHIBIT · "+(CATS[pick.cat][LANG]||CATS[pick.cat].en);
+  setExhibit(pick);
 }
 function submitGuess(auto){
   if(!G||G.submitted)return;
@@ -581,15 +576,27 @@ function leaveBattle(silent){
 /* ═══════════ 도감 ═══════════ */
 function buildStudy(){
   const sel=$("study-filter");
+  const cats=[...new Set(POOL.map(t=>t.cat))];
   sel.innerHTML=`<option value="all">${tt("all")}</option>`+
-    Object.keys(CATS).map(c=>`<option value="${c}">${CATS[c][LANG]||CATS[c].en}</option>`).join("");
+    cats.map(c=>`<option value="${c}">${CATS[c][LANG]||CATS[c].en}</option>`).join("");
   renderStudy("all");
 }
 function renderStudy(cat){
   const grid=$("study-grid");
-  grid.innerHTML=TRICKS.filter(tr=>cat==="all"||tr.cat===cat).map(tr=>
-    `<div class="study-card"><div class="exhibit">${renderTrick(tr)}</div>
+  const list=POOL.filter(tr=>cat==="all"||tr.cat===cat);
+  grid.innerHTML=list.map(tr=>
+    `<div class="study-card" data-tid="${tr.id}"><div class="exhibit"><div class="ex-loading" style="min-height:150px"><div class="spinner"></div></div></div>
      <h4>${esc(tr.a[LANG]||tr.a.ko)}</h4><p>${esc(tr.e)}</p></div>`).join("");
+  list.forEach(tr=>{
+    preparePhotos(tr).then(urls=>{
+      const card=grid.querySelector('[data-tid="'+tr.id+'"] .exhibit');if(!card)return;
+      if(tr.v.t==="flag"){card.innerHTML=renderTrick(tr);return;}
+      const first=(urls&&urls[0]);
+      if(!first){card.innerHTML=renderTrick(tr);return;}
+      loadImg(first).then(im=>{im.className="photo";card.innerHTML="";card.appendChild(im);})
+        .catch(()=>card.innerHTML=renderTrick(tr));
+    });
+  });
 }
 
 /* ═══════════ 이벤트 바인딩 ═══════════ */
