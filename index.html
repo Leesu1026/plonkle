@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Plonkle — 지오게서 트릭 훈련 배틀</title>
+<meta name="description" content="볼라드·번호판·언어·표지판… 단서 하나만 보고 세계지도에 핀을 꽂아라. 데일리 챌린지와 1대1 실시간 배틀, Plonkle.">
+<meta name="theme-color" content="#0B1026">
+<meta property="og:title" content="Plonkle 🌍 지오게서 트릭 훈련 배틀">
+<meta property="og:description" content="단서 하나만 보고 어느 나라·어느 지역인지 맞혀라!">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=IBM+Plex+Sans+KR:wght@400;500;700&family=IBM+Plex+Mono:wght@500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ═══════════ HOME ═══════════ -->
+<section id="scr-home" class="screen active">
+  <div class="home-wrap">
+    <div class="logo-block">
+      <div class="logo-globe">🌍</div>
+      <h1 class="logo">PLONKLE</h1>
+      <p class="tagline" data-i18n="tagline">단서 하나로 세계를 맞혀라 · 지오게서 트릭 훈련</p>
+    </div>
+    <div class="menu">
+      <button class="btn big accent" id="btn-daily"><span class="btn-emoji">📅</span><span data-i18n="daily">데일리 챌린지</span><small id="daily-date-label"></small></button>
+      <button class="btn big" id="btn-practice"><span class="btn-emoji">🎯</span><span data-i18n="practice">연습 모드</span><small data-i18n="practiceSub">무제한 랜덤 5라운드</small></button>
+      <button class="btn big" id="btn-battle"><span class="btn-emoji">⚔️</span><span data-i18n="battle">1대1 배틀</span><small data-i18n="battleSub">친구와 실시간 대결</small></button>
+      <button class="btn big" id="btn-study"><span class="btn-emoji">📖</span><span data-i18n="study">트릭 도감</span><small data-i18n="studySub">모든 단서 훑어보기</small></button>
+    </div>
+    <div class="home-foot">
+      <button class="chip" id="btn-nick">👤 <span id="nick-label">닉네임</span></button>
+      <button class="chip" id="btn-lang">🌐 <span id="lang-label">한국어</span></button>
+      <span class="chip ghost" id="online-status">…</span>
+    </div>
+  </div>
+  <div class="lang-menu hidden" id="lang-menu">
+    <button data-lang="ko">한국어</button>
+    <button data-lang="en">English</button>
+    <button disabled>中文 (준비 중)</button>
+    <button disabled>日本語 (준비 중)</button>
+    <button disabled>Español (준비 중)</button>
+    <button disabled>Français (준비 중)</button>
+  </div>
+</section>
+
+<!-- ═══════════ BATTLE LOBBY ═══════════ -->
+<section id="scr-lobby" class="screen">
+  <div class="panel narrow">
+    <button class="back" data-back>←</button>
+    <h2 data-i18n="battle">1대1 배틀</h2>
+    <p class="dim" data-i18n="battleDesc">같은 5개의 단서로 동시에 대결! 라운드당 40초.</p>
+    <button class="btn big accent" id="btn-create-room" data-i18n="createRoom">방 만들기</button>
+    <div class="joinrow">
+      <input id="join-code" maxlength="5" placeholder="CODE" autocomplete="off">
+      <button class="btn" id="btn-join-room" data-i18n="joinRoom">참가</button>
+    </div>
+    <p class="err hidden" id="lobby-err"></p>
+  </div>
+</section>
+
+<section id="scr-wait" class="screen">
+  <div class="panel narrow center">
+    <h2 data-i18n="waiting">상대 기다리는 중…</h2>
+    <p class="dim" data-i18n="shareCode">친구에게 이 코드를 알려주세요</p>
+    <div class="roomcode" id="room-code-view">—</div>
+    <div class="spinner"></div>
+    <button class="btn ghost" id="btn-cancel-room" data-i18n="cancel">취소</button>
+  </div>
+</section>
+
+<!-- ═══════════ GAME ═══════════ -->
+<section id="scr-game" class="screen">
+  <header class="hud">
+    <button class="back" id="btn-quit">←</button>
+    <div class="hud-mid">
+      <span class="hud-item"><b data-i18n="round">라운드</b> <span id="hud-round">1</span>/5</span>
+      <span class="hud-item"><b data-i18n="score">점수</b> <span id="hud-score">0</span></span>
+      <span class="hud-item hidden" id="hud-opp-wrap">🆚 <span id="hud-opp-name"></span> <span id="hud-opp-score">0</span></span>
+    </div>
+    <div class="hud-timer hidden" id="hud-timer">40</div>
+  </header>
+
+  <div class="stage">
+    <div class="exhibit-card">
+      <div class="exhibit-stamp" id="exhibit-cat">EXHIBIT</div>
+      <div class="exhibit" id="exhibit"></div>
+      <div class="exhibit-hint" data-i18n="exhibitHint">이 단서만 보고 지도에 핀을 꽂으세요</div>
+    </div>
+  </div>
+
+  <div class="mapbox" id="mapbox">
+    <button class="map-expand" id="map-expand">⤢</button>
+    <div id="map"></div>
+    <button class="btn accent guessbtn" id="btn-guess" disabled data-i18n="guess">지도를 클릭해 핀을 꽂으세요</button>
+  </div>
+
+  <!-- round result overlay -->
+  <div class="overlay hidden" id="ov-result">
+    <div class="result-card">
+      <div class="result-flagrow"><span id="res-answer">🇫🇷 프랑스</span></div>
+      <div class="scorebar-wrap"><div class="scorebar" id="res-bar"></div></div>
+      <div class="result-nums"><b id="res-points">0</b><span data-i18n="pts">점</span> · <span id="res-dist">—</span></div>
+      <div class="result-opp hidden" id="res-opp"></div>
+      <div class="result-explain" id="res-explain"></div>
+      <button class="btn accent" id="btn-next" data-i18n="next">다음 라운드</button>
+    </div>
+  </div>
+
+  <!-- final overlay -->
+  <div class="overlay hidden" id="ov-final">
+    <div class="result-card">
+      <h2 id="final-title" data-i18n="finalTitle">게임 종료!</h2>
+      <div class="final-score"><span id="final-score">0</span><small>/ 25000</small></div>
+      <div class="final-opp hidden" id="final-opp"></div>
+      <div id="final-board" class="board hidden"></div>
+      <div class="rowbtns">
+        <button class="btn accent" id="btn-again" data-i18n="again">한 번 더</button>
+        <button class="btn" id="btn-home" data-i18n="home">홈으로</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ STUDY ═══════════ -->
+<section id="scr-study" class="screen">
+  <header class="hud">
+    <button class="back" data-back>←</button>
+    <div class="hud-mid"><b data-i18n="study">트릭 도감</b></div>
+    <select id="study-filter"></select>
+  </header>
+  <div class="study-grid" id="study-grid"></div>
+</section>
+
+<div class="toast hidden" id="toast"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
+<script src="config.js"></script>
+<script src="data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
