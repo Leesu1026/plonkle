@@ -303,6 +303,15 @@ function startGame(mode,seed){
   $("dock").classList.add("hidden");$("ov-final").classList.add("hidden");
   startRound();
 }
+function startRound(){
+  const tr=G.tricks[G.round];G.submitted=false;
+  $("hud-round").textContent=G.round+1;
+  $("hud-score").textContent=G.total;
+  $("exhibit-cat").textContent="EXHIBIT · "+(CATS[tr.cat][LANG]||CATS[tr.cat].en);
+  setExhibit(tr);
+  resetMapForRound();
+  if(G.mode==="battle")startBattleTimer();
+}
 /* ── 실물 사진 파이프라인 (정확도 우선: 커먼즈 국가별 카테고리) ──
    각 트릭 = 사람이 분류한 커먼즈 카테고리의 실사. 국기는 실물 국기 이미지.
    실사를 못 구하는 트릭은 아예 출제되지 않음(TRICKS 로드 시 필터). */
@@ -356,42 +365,23 @@ function setExhibit(tr){
   const inner=$("ex-inner"),hint=$("exhibit-hint");
   exReset();
   if(hint)hint.textContent=tt("exhibitHint");
-  if(tr.v.t==="flag"){ // 국기는 실물 국기 이미지
-    inner.innerHTML='<div class="ex-loading"><div class="spinner"></div></div>';
-    loadImg("https://flagcdn.com/w320/"+tr.v.code+".png").then(im=>{
-      if(!G||G.tricks[G.round]!==tr)return;im.className="photo";inner.innerHTML="";inner.appendChild(im);
-    }).catch(()=>{if(G&&G.tricks[G.round]===tr)skipTrick(tr);});
-    return;
-  }
-  inner.innerHTML='<div class="ex-loading"><div class="spinner"></div></div>';
-  preparePhotos(tr).then(urls=>{
-    if(!G||G.tricks[G.round]!==tr)return;
-    tryShow(tr,urls,0,inner,hint);
-  });
-  if(G&&G.round<4)preparePhotos(G.tricks[G.round+1]); // prefetch
-}
-function tryShow(tr,urls,i,inner,hint){
-  if(!G||G.tricks[G.round]!==tr)return;
-  if(!urls||i>=urls.length)return skipTrick(tr); // 실사 로드 실패 → 트릭 교체(일러스트 금지)
-  loadImg(urls[i]).then(im=>{
-    if(!G||G.tricks[G.round]!==tr)return;
-    im.className="photo";inner.innerHTML="";inner.appendChild(im);
-    if(hint)hint.textContent="📷 Wikimedia Commons · "+tt("exhibitHint");
-  }).catch(()=>tryShow(tr,urls,i+1,inner,hint));
-}
-function skipTrick(failed){
-  if(!G)return;
-  if(!G.dead)G.dead=new Set();
-  if(failed)G.dead.add(failed.id);
-  const used=new Set(G.tricks.map(t=>t.id));
-  const cands=POOL.filter(t=>!used.has(t.id)&&!G.dead.has(t.id));
-  for(let k=cands.length-1;k>0;k--){const j=Math.floor(Math.random()*(k+1));[cands[k],cands[j]]=[cands[j],cands[k]];}
-  const pick=cands[0];
-  if(!pick){ // 후보 소진 시: 로딩 유지(일러스트로 떨어지지 않음)
-    $("ex-inner").innerHTML='<div class="ex-loading dim" style="font-size:13px">실사 이미지를 불러오는 중…</div>';return;}
-  G.tricks[G.round]=pick;
-  $("exhibit-cat").textContent="EXHIBIT · "+(CATS[pick.cat][LANG]||CATS[pick.cat].en);
-  setExhibit(pick);
+  const mine=()=>G&&G.tricks[G.round]===tr;
+  // 1) 즉시 일러스트로 문제를 띄워 게임이 절대 멈추지 않게 한다
+  inner.innerHTML=renderTrick(tr);
+  // 2) 실사가 준비되면 조용히 교체 (국기 포함)
+  const showPhoto=urls=>{
+    if(!mine()||!urls||!urls.length)return;
+    let i=0;const step=()=>{
+      if(!mine()||i>=urls.length)return;
+      loadImg(urls[i]).then(im=>{
+        if(!mine())return;im.className="photo";inner.innerHTML="";inner.appendChild(im);
+        if(hint)hint.textContent="📷 Wikimedia Commons · "+tt("exhibitHint");
+      }).catch(()=>{i++;step();});
+    };step();
+  };
+  if(tr.v.t==="flag"){showPhoto(["https://flagcdn.com/w320/"+tr.v.code+".png"]);return;}
+  preparePhotos(tr).then(showPhoto);
+  if(G&&G.round<4)preparePhotos(G.tricks[G.round+1]); // prefetch 다음 라운드
 }
 function submitGuess(auto){
   if(!G||G.submitted)return;
