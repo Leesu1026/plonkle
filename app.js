@@ -231,10 +231,15 @@ function renderTrick(tr){
 /* ═══════════ 지도 ═══════════ */
 let map=null,guessMarker=null,resultLayers=[],mapLocked=false,pendingGuess=null;
 function initMap(){
-  map=L.map("map",{worldCopyJump:true,minZoom:2,maxZoom:20,zoomControl:true}).setView([25,10],2);
-  L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png",{
+  map=L.map("map",{worldCopyJump:true,minZoom:2,maxZoom:20,zoomControl:true}).setView([30,10],3);
+  // 라벨 없는 지형 베이스
+  L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager_nolabels/{z}/{x}/{y}{r}.png",{
     subdomains:"abcd",maxZoom:20,keepBuffer:6,updateWhenIdle:false,updateWhenZooming:true,
     attribution:"&copy; OpenStreetMap &copy; CARTO"
+  }).addTo(map);
+  // 영어 라벨 오버레이 (낮은 배율부터 국가명이 보이도록 항상 위에)
+  const labels=L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}{r}.png",{
+    subdomains:"abcd",maxZoom:20,keepBuffer:6,pane:"markerPane",opacity:1
   }).addTo(map);
   // 적도·회귀선·날짜변경선 안내선 (WorldGuessr 스타일)
   const guide={color:"#c0392b",weight:1,opacity:.55,dashArray:"6 6",interactive:false};
@@ -246,8 +251,8 @@ function initMap(){
   const detail=L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",
     {maxZoom:19,keepBuffer:6,attribution:"&copy; OpenStreetMap"});
   map.on("zoomend",()=>{const z=map.getZoom();
-    if(z>=13){if(!map.hasLayer(detail))detail.addTo(map);}
-    else if(map.hasLayer(detail))map.removeLayer(detail);});
+    if(z>=13){if(!map.hasLayer(detail)){detail.addTo(map);}map.removeLayer(labels);}
+    else{if(map.hasLayer(detail))map.removeLayer(detail);if(!map.hasLayer(labels))labels.addTo(map);}});
   map.on("click",e=>{if(!mapLocked)setGuessPin(e.latlng);});
   $("mapbox").addEventListener("transitionend",()=>map.invalidateSize());
   $("mapbox").addEventListener("mouseenter",()=>setTimeout(()=>map.invalidateSize(),280));
@@ -263,7 +268,7 @@ function resetMapForRound(){
   mapLocked=false;pendingGuess=null;
   if(guessMarker){map.removeLayer(guessMarker);guessMarker=null;}
   resultLayers.forEach(l=>map.removeLayer(l));resultLayers=[];
-  map.setView([25,10],2);
+  map.setView([30,10],3);
   const b=$("btn-guess");b.disabled=true;b.textContent=tt("guess");
   $("mapbox").classList.remove("expanded");
   $("dock").classList.add("hidden");
@@ -351,7 +356,13 @@ function setExhibit(tr){
   const inner=$("ex-inner"),hint=$("exhibit-hint");
   exReset();
   if(hint)hint.textContent=tt("exhibitHint");
-  if(tr.v.t==="flag"){inner.innerHTML=renderTrick(tr);return;}
+  if(tr.v.t==="flag"){ // 국기는 실물 국기 이미지
+    inner.innerHTML='<div class="ex-loading"><div class="spinner"></div></div>';
+    loadImg("https://flagcdn.com/w320/"+tr.v.code+".png").then(im=>{
+      if(!G||G.tricks[G.round]!==tr)return;im.className="photo";inner.innerHTML="";inner.appendChild(im);
+    }).catch(()=>{if(G&&G.tricks[G.round]===tr)skipTrick(tr);});
+    return;
+  }
   inner.innerHTML='<div class="ex-loading"><div class="spinner"></div></div>';
   preparePhotos(tr).then(urls=>{
     if(!G||G.tricks[G.round]!==tr)return;
@@ -361,24 +372,23 @@ function setExhibit(tr){
 }
 function tryShow(tr,urls,i,inner,hint){
   if(!G||G.tricks[G.round]!==tr)return;
-  if(!urls||i>=urls.length){ // 실사 없음 → 이 라운드 스킵(다음 트릭으로 교체)
-    inner.innerHTML='<div class="ex-loading dim" style="font-size:13px">실사를 찾는 중…</div>';
-    return replaceCurrentTrick();
-  }
+  if(!urls||i>=urls.length)return skipTrick(tr); // 실사 로드 실패 → 트릭 교체(일러스트 금지)
   loadImg(urls[i]).then(im=>{
     if(!G||G.tricks[G.round]!==tr)return;
     im.className="photo";inner.innerHTML="";inner.appendChild(im);
     if(hint)hint.textContent="📷 Wikimedia Commons · "+tt("exhibitHint");
   }).catch(()=>tryShow(tr,urls,i+1,inner,hint));
 }
-function replaceCurrentTrick(){
-  // 현재 라운드 트릭을 실사 있는 다른 트릭으로 교체 (중복/이미 등장 제외)
+function skipTrick(failed){
+  if(!G)return;
+  if(!G.dead)G.dead=new Set();
+  if(failed)G.dead.add(failed.id);
   const used=new Set(G.tricks.map(t=>t.id));
-  const cands=POOL.filter(t=>!used.has(t.id));
+  const cands=POOL.filter(t=>!used.has(t.id)&&!G.dead.has(t.id));
   for(let k=cands.length-1;k>0;k--){const j=Math.floor(Math.random()*(k+1));[cands[k],cands[j]]=[cands[j],cands[k]];}
   const pick=cands[0];
-  if(!pick){ // 정말 없으면 그냥 일러스트로
-    const tr=G.tricks[G.round];$("ex-inner").innerHTML=renderTrick(tr);return;}
+  if(!pick){ // 후보 소진 시: 로딩 유지(일러스트로 떨어지지 않음)
+    $("ex-inner").innerHTML='<div class="ex-loading dim" style="font-size:13px">실사 이미지를 불러오는 중…</div>';return;}
   G.tricks[G.round]=pick;
   $("exhibit-cat").textContent="EXHIBIT · "+(CATS[pick.cat][LANG]||CATS[pick.cat].en);
   setExhibit(pick);
@@ -589,12 +599,16 @@ function renderStudy(cat){
      <h4>${esc(tr.a[LANG]||tr.a.ko)}</h4><p>${esc(tr.e)}</p></div>`).join("");
   list.forEach(tr=>{
     preparePhotos(tr).then(urls=>{
-      const card=grid.querySelector('[data-tid="'+tr.id+'"] .exhibit');if(!card)return;
-      if(tr.v.t==="flag"){card.innerHTML=renderTrick(tr);return;}
+      const cardEl=grid.querySelector('[data-tid="'+tr.id+'"]');
+      const card=cardEl&&cardEl.querySelector('.exhibit');if(!card)return;
+      if(tr.v.t==="flag"){
+        loadImg("https://flagcdn.com/w320/"+tr.v.code+".png").then(im=>{im.className="photo";card.innerHTML="";card.appendChild(im);})
+          .catch(()=>{if(cardEl)cardEl.remove();});
+        return;}
       const first=(urls&&urls[0]);
-      if(!first){card.innerHTML=renderTrick(tr);return;}
+      if(!first){if(cardEl)cardEl.remove();return;} // 실사 없으면 카드 제거(일러스트 금지)
       loadImg(first).then(im=>{im.className="photo";card.innerHTML="";card.appendChild(im);})
-        .catch(()=>card.innerHTML=renderTrick(tr));
+        .catch(()=>{if(cardEl)cardEl.remove();});
     });
   });
 }
