@@ -271,3 +271,24 @@ TF("fl-cr",9.9,-84.2,150,800,"cr","🇨🇷 코스타리카","🇨🇷 Costa Ric
 TF("fl-gr",39.1,22.9,350,1200,"gr","🇬🇷 그리스","🇬🇷 Greece","파란·흰 줄무늬 + 십자 칸톤은 그리스입니다.");
 TF("fl-tr",39.0,35.2,500,1400,"tr","🇹🇷 튀르키예","🇹🇷 Türkiye","빨간 바탕 + 초승달과 별은 튀르키예입니다.");
 TF("fl-my",3.9,102.0,350,1000,"my","🇲🇾 말레이시아","🇲🇾 Malaysia","미국과 닮은 줄무늬 + 초승달 칸톤이면 말레이시아입니다.");
+
+/* ═══ 실물 사진 소스 (위키백과 대표 이미지 자동 로드) ═══
+   형식: 트릭id : "문서제목" (en) 또는 "언어코드:문서제목"
+   ※ 지역코드·언어·도메인류는 '정확한 코드 자체'가 단서라서 일러스트 유지.
+   ※ img/<트릭id>.jpg 파일을 직접 올리면 그 사진이 최우선으로 사용됩니다. */
+const WIKI={
+  "pl-nl":"Vehicle registration plates of the Netherlands",
+  "pl-uk":"Vehicle registration plates of the United Kingdom",
+  "pl-fr":"Vehicle registration plates of France",
+  "pl-it":"Vehicle registration plates of Italy",
+  "pl-ch":"Vehicle registration plates of Switzerland",
+  "pl-ua":"Vehicle registration plates of Ukraine",
+  "pl-co":"Vehicle registration plates of Colombia",
+  "pl-ar":"Vehicle registration plates of Argentina",
+  "pl-br":"Vehicle registration plates of Brazil",
+  "pl-cl":"Vehicle registration plates of Chile",
+  "pl-kr":"Vehicle registration plates of South Korea",
+  "pl-my":"Vehicle registration plates of Malaysia",
+  "pl-nz":"Vehicle registration plates of New Zealand",
+  "bo-de":"de:Leitpfosten"
+};

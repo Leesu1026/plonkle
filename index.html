@@ -96,16 +96,14 @@
     <button class="btn accent guessbtn" id="btn-guess" disabled data-i18n="guess">지도를 클릭해 핀을 꽂으세요</button>
   </div>
 
-  <!-- round result overlay -->
-  <div class="overlay hidden" id="ov-result">
-    <div class="result-card">
-      <div class="result-flagrow"><span id="res-answer">🇫🇷 프랑스</span></div>
-      <div class="scorebar-wrap"><div class="scorebar" id="res-bar"></div></div>
-      <div class="result-nums"><b id="res-points">0</b><span data-i18n="pts">점</span> · <span id="res-dist">—</span></div>
-      <div class="result-opp hidden" id="res-opp"></div>
-      <div class="result-explain" id="res-explain"></div>
-      <button class="btn accent" id="btn-next" data-i18n="next">다음 라운드</button>
-    </div>
+  <!-- round result dock (지도를 가리지 않는 결과 패널) -->
+  <div class="dock hidden" id="dock">
+    <div class="dock-answer" id="dock-answer">🇫🇷 프랑스</div>
+    <div class="scorebar-wrap"><div class="scorebar" id="dock-bar"></div></div>
+    <div class="dock-nums"><b id="dock-points">0</b><span data-i18n="pts">점</span> · <span id="dock-dist">—</span></div>
+    <div class="dock-opp hidden" id="dock-opp"></div>
+    <div class="dock-explain" id="dock-explain"></div>
+    <button class="btn accent" id="dock-next" data-i18n="next">다음 라운드</button>
   </div>
 
   <!-- final overlay -->

@@ -231,9 +231,21 @@ function renderTrick(tr){
 /* ═══════════ 지도 ═══════════ */
 let map=null,guessMarker=null,resultLayers=[],mapLocked=false,pendingGuess=null;
 function initMap(){
-  map=L.map("map",{worldCopyJump:true,minZoom:1}).setView([22,10],1);
-  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"&copy; OpenStreetMap"}).addTo(map);
+  map=L.map("map",{worldCopyJump:true,minZoom:2,maxZoom:20,zoomControl:true}).setView([25,10],2);
+  L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png",{
+    subdomains:"abcd",maxZoom:20,keepBuffer:6,updateWhenIdle:false,updateWhenZooming:true,
+    attribution:"&copy; OpenStreetMap &copy; CARTO"
+  }).addTo(map);
+  // 적도·회귀선·날짜변경선 안내선 (WorldGuessr 스타일)
+  const guide={color:"#c0392b",weight:1,opacity:.55,dashArray:"6 6",interactive:false};
+  [[0,"#c0392b",.55],[23.4366,"#888",.45],[-23.4366,"#888",.45]].forEach(([lat,c,o])=>{
+    L.polyline([[lat,-540],[lat,540]],{...guide,color:c,opacity:o}).addTo(map);});
+  L.polyline([[-85,180],[85,180]],{...guide,color:"#888",opacity:.45}).addTo(map);
+  L.polyline([[-85,-180],[85,-180]],{...guide,color:"#888",opacity:.45}).addTo(map);
   map.on("click",e=>{if(!mapLocked)setGuessPin(e.latlng);});
+  $("mapbox").addEventListener("transitionend",()=>map.invalidateSize());
+  $("mapbox").addEventListener("mouseenter",()=>setTimeout(()=>map.invalidateSize(),280));
+  $("mapbox").addEventListener("mouseleave",()=>setTimeout(()=>map.invalidateSize(),280));
 }
 function setGuessPin(latlng){
   pendingGuess=latlng;
@@ -245,9 +257,10 @@ function resetMapForRound(){
   mapLocked=false;pendingGuess=null;
   if(guessMarker){map.removeLayer(guessMarker);guessMarker=null;}
   resultLayers.forEach(l=>map.removeLayer(l));resultLayers=[];
-  map.setView([22,10],1);
+  map.setView([25,10],2);
   const b=$("btn-guess");b.disabled=true;b.textContent=tt("guess");
   $("mapbox").classList.remove("expanded");
+  $("dock").classList.add("hidden");
   setTimeout(()=>map.invalidateSize(),300);
 }
 
@@ -267,16 +280,38 @@ function startGame(mode,seed){
   setTimeout(()=>map.invalidateSize(),60);
   $("hud-opp-wrap").classList.toggle("hidden",mode!=="battle");
   $("hud-timer").classList.toggle("hidden",mode!=="battle");
-  $("ov-result").classList.add("hidden");$("ov-final").classList.add("hidden");
+  $("dock").classList.add("hidden");$("ov-final").classList.add("hidden");
   startRound();
+}
+/* ── 실물 사진 파이프라인: img/<id>.jpg → 위키백과 대표사진 → SVG 일러스트 ── */
+const photoCache={};
+function loadWikiPhoto(tr){
+  const t=(typeof WIKI!=="undefined")&&WIKI[tr.id];
+  if(!t)return Promise.resolve(null);
+  if(photoCache[tr.id]!==undefined)return Promise.resolve(photoCache[tr.id]);
+  let lang="en",title=t;const m=t.match(/^([a-z]{2}):(.+)$/);if(m){lang=m[1];title=m[2];}
+  return fetch("https://"+lang+".wikipedia.org/api/rest_v1/page/summary/"+encodeURIComponent(title))
+    .then(r=>r.ok?r.json():null)
+    .then(j=>{const u=j&&((j.originalimage&&j.originalimage.source)||(j.thumbnail&&j.thumbnail.source))||null;
+      photoCache[tr.id]=u;return u;})
+    .catch(()=>{photoCache[tr.id]=null;return null;});
+}
+function setExhibit(tr){
+  const box=$("exhibit");
+  box.innerHTML=renderTrick(tr); // 일단 일러스트, 사진 로드되면 교체
+  const swap=im=>{if(G&&G.tricks[G.round]===tr){box.innerHTML="";im.className="photo";box.appendChild(im);}};
+  const local=new Image();
+  local.onload=()=>swap(local);
+  local.onerror=()=>{loadWikiPhoto(tr).then(u=>{
+    if(!u)return;const w=new Image();w.onload=()=>swap(w);w.src=u;});};
+  local.src="img/"+tr.id+".jpg";
 }
 function startRound(){
   const tr=G.tricks[G.round];G.submitted=false;
   $("hud-round").textContent=G.round+1;
   $("hud-score").textContent=G.total;
   $("exhibit-cat").textContent="EXHIBIT · "+(CATS[tr.cat][LANG]||CATS[tr.cat].en);
-  $("exhibit").innerHTML=renderTrick(tr);
-  $("ov-result").classList.add("hidden");
+  setExhibit(tr);
   resetMapForRound();
   if(G.mode==="battle")startBattleTimer();
 }
@@ -291,26 +326,28 @@ function submitGuess(auto){
   const tgt=L.latLng(tr.tgt[0],tr.tgt[1]);
   const tm=L.circleMarker(tgt,{radius:9,color:"#0b3d1e",weight:2,fillColor:"#5EBF82",fillOpacity:1});
   resultLayers.push(tm.addTo(map));
+  tm.bindTooltip(tr.a[LANG]||tr.a.ko,{permanent:true,direction:"top",offset:[0,-10]});
+  $("mapbox").classList.add("expanded");
   if(g){const line=L.polyline([L.latLng(g[0],g[1]),tgt],{color:"#FFC24B",weight:3,dashArray:"7 7"});
     resultLayers.push(line.addTo(map));
-    $("mapbox").classList.add("expanded");
-    setTimeout(()=>{map.invalidateSize();map.fitBounds(line.getBounds().pad(0.45));},320);
-  }else{map.setView(tgt,3);}
+    setTimeout(()=>{map.invalidateSize();map.fitBounds(line.getBounds().pad(0.45));},330);
+  }else setTimeout(()=>{map.invalidateSize();map.setView(tgt,4);},330);
+  const b=$("btn-guess");b.disabled=true;b.textContent="🔍 "+(tr.a[LANG]||tr.a.ko);
   if(G.mode==="battle")battleSubmit(g,d,sc);
   showRoundResult(tr,d,sc,auto);
 }
 function showRoundResult(tr,d,sc,auto){
-  $("res-answer").textContent=tr.a[LANG]||tr.a.ko;
-  $("res-points").textContent=sc.toLocaleString();
-  $("res-dist").textContent=d==null?tt("timeout"):fmtKm(d)+" "+tt("distKm");
-  $("res-explain").textContent=tr.e;
-  $("res-bar").style.width="0";
-  requestAnimationFrame(()=>requestAnimationFrame(()=>{$("res-bar").style.width=(sc/5000*100)+"%";}));
-  const oppEl=$("res-opp");
-  if(G.mode==="battle"){oppEl.classList.remove("hidden");oppEl.textContent="⏳ "+tt("waiting");updateBattleRoundOpp();}
+  $("dock-answer").textContent=tr.a[LANG]||tr.a.ko;
+  $("dock-points").textContent=sc.toLocaleString();
+  $("dock-dist").textContent=d==null?tt("timeout"):fmtKm(d)+" "+tt("distKm");
+  $("dock-explain").textContent=tr.e;
+  $("dock-bar").style.width="0";
+  requestAnimationFrame(()=>requestAnimationFrame(()=>{$("dock-bar").style.width=(sc/5000*100)+"%";}));
+  const oppEl=$("dock-opp");
+  if(G.mode==="battle"){oppEl.classList.remove("hidden");oppEl.textContent="\u23f3 "+tt("waiting");updateBattleRoundOpp();}
   else oppEl.classList.add("hidden");
-  $("btn-next").textContent=G.round===4?tt("seeResult"):tt("next");
-  $("ov-result").classList.remove("hidden");
+  $("dock-next").textContent=G.round===4?tt("seeResult"):tt("next");
+  $("dock").classList.remove("hidden");
 }
 function nextRound(){
   if(G.mode==="battle"){battleNext();return;}
@@ -318,7 +355,7 @@ function nextRound(){
   G.round++;startRound();
 }
 function finishGame(){
-  $("ov-result").classList.add("hidden");
+  $("dock").classList.add("hidden");
   $("final-score").textContent=G.total.toLocaleString();
   $("final-title").textContent=tt("finalTitle");
   $("final-opp").classList.add("hidden");
@@ -412,7 +449,7 @@ function attachRoom(){
       if(opP)$("hud-opp-name").textContent=opP.name;
       updateOppScore(r);
       if(r.round>G.round&&r.round<=4){ // 라운드 넘어감
-        G.round=r.round;$("ov-result").classList.add("hidden");startRound();
+        G.round=r.round;startRound();
       }
       if(G.submitted)updateBattleRoundOpp();
     }
@@ -431,7 +468,7 @@ function battleSubmit(g,d,sc){
 function updateBattleRoundOpp(){
   if(!B||!B.room||!B.opp)return;
   const og=battleGuesses(B.room,G.round)[B.opp.uid];
-  const el=$("res-opp");
+  const el=$("dock-opp");
   if(og){el.textContent="🆚 "+(B.opp.name||"?")+" — "+og.score.toLocaleString()+tt("pts")+(og.d!=null?" · "+fmtKm(og.d)+" km":"");}
 }
 function battleNext(){
@@ -507,7 +544,7 @@ $("btn-join-room").onclick=joinRoom;
 $("btn-cancel-room").onclick=()=>leaveBattle();
 $("btn-quit").onclick=()=>{clearInterval(timerInt);if(G&&G.mode==="battle")leaveBattle();else show("scr-home");G=null;};
 $("btn-guess").onclick=()=>submitGuess(false);
-$("btn-next").onclick=nextRound;
+$("dock-next").onclick=nextRound;
 $("btn-again").onclick=()=>{$("ov-final").classList.add("hidden");
   if(G.mode==="battle"){leaveBattle();return;}
   startGame(G.mode==="daily"?"practice":G.mode,Math.floor(Math.random()*2**31));};
