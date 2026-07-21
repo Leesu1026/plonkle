@@ -83,9 +83,18 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .exhibit-stamp{position:absolute;top:-13px;left:50%;transform:translateX(-50%) rotate(-2deg);z-index:2;
   background:var(--red);color:#fff;font-family:var(--mono);font-weight:700;font-size:12px;letter-spacing:2px;
   padding:4px 12px;border-radius:4px;box-shadow:0 3px 10px #0007}
-.exhibit{border-radius:4px;overflow:hidden;background:#fff}
+.exhibit{border-radius:4px;overflow:hidden;background:#fff;position:relative;touch-action:none;cursor:grab}
+.exhibit:active{cursor:grabbing}
+.ex-inner{transition:transform .06s linear;transform-origin:center center}
 .exhibit svg{display:block;width:100%;height:auto}
 .exhibit img.flagimg{display:block;width:100%;height:auto}
+.ex-ctrl{position:absolute;top:8px;right:8px;display:flex;flex-direction:column;gap:6px;z-index:3}
+.ex-ctrl button{width:34px;height:34px;border-radius:9px;background:#0009;color:#fff;font-size:17px;line-height:1}
+.ex-loading{min-height:240px;display:flex;align-items:center;justify-content:center;background:#e9e4d8}
+.clue-chip{position:absolute;left:50%;bottom:10px;transform:translateX(-50%);z-index:2;max-width:92%;
+  background:#0B1026e6;color:#fff;font-family:var(--mono);font-weight:700;font-size:15px;
+  padding:8px 14px;border-radius:10px;border:1px solid #ffffff33;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  box-shadow:0 6px 18px #0008}
 .exhibit-hint{font-family:var(--mono);font-size:11px;color:#8a8474;text-align:center;padding-top:8px;letter-spacing:1px}
 
 /* ── minimap (GeoGuessr style) ── */

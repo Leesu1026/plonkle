@@ -242,6 +242,12 @@ function initMap(){
     L.polyline([[lat,-540],[lat,540]],{...guide,color:c,opacity:o}).addTo(map);});
   L.polyline([[-85,180],[85,180]],{...guide,color:"#888",opacity:.45}).addTo(map);
   L.polyline([[-85,-180],[85,-180]],{...guide,color:"#888",opacity:.45}).addTo(map);
+  // 고배율에선 상세 정보(지하철역·POI·노선 등)가 풍부한 OSM 표준 타일로 전환
+  const detail=L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+    {maxZoom:19,keepBuffer:6,attribution:"&copy; OpenStreetMap"});
+  map.on("zoomend",()=>{const z=map.getZoom();
+    if(z>=13){if(!map.hasLayer(detail))detail.addTo(map);}
+    else if(map.hasLayer(detail))map.removeLayer(detail);});
   map.on("click",e=>{if(!mapLocked)setGuessPin(e.latlng);});
   $("mapbox").addEventListener("transitionend",()=>map.invalidateSize());
   $("mapbox").addEventListener("mouseenter",()=>setTimeout(()=>map.invalidateSize(),280));
@@ -266,15 +272,22 @@ function resetMapForRound(){
 
 /* ═══════════ 게임 상태 ═══════════ */
 let G=null,timerInt=null;
-function pickTricks(rng){
-  const idx=[...TRICKS.keys()];shuffle(idx,rng);
+function getRecent(){try{return JSON.parse(localStorage.getItem("plk_recent")||"[]");}catch(e){return[];}}
+function pushRecent(ids){try{localStorage.setItem("plk_recent",JSON.stringify([...ids,...getRecent()].slice(0,60)));}catch(e){}}
+function pickTricks(rng,avoidRecent){
+  let pool=[...TRICKS.keys()];
+  if(avoidRecent){const rec=new Set(getRecent());
+    const f=pool.filter(i=>!rec.has(TRICKS[i].id));
+    if(f.length>=40)pool=f;}
+  shuffle(pool,rng);
   const chosen=[],cats=new Set();
-  for(const i of idx){const tr=TRICKS[i];if(cats.has(tr.cat))continue;chosen.push(tr);cats.add(tr.cat);if(chosen.length===5)break;}
-  let j=0;while(chosen.length<5&&j<idx.length){const tr=TRICKS[idx[j++]];if(!chosen.includes(tr))chosen.push(tr);}
+  for(const i of pool){const tr=TRICKS[i];if(cats.has(tr.cat))continue;chosen.push(tr);cats.add(tr.cat);if(chosen.length===5)break;}
+  let j=0;while(chosen.length<5&&j<pool.length){const tr=TRICKS[pool[j++]];if(!chosen.includes(tr))chosen.push(tr);}
   return chosen;
 }
 function startGame(mode,seed){
-  G={mode,seed,round:0,total:0,scores:[],submitted:false,tricks:pickTricks(mulberry32(seed>>>0))};
+  G={mode,seed,round:0,total:0,scores:[],submitted:false,tricks:pickTricks(mulberry32(seed>>>0),mode==='practice')};
+  pushRecent(G.tricks.map(t=>t.id));
   show("scr-game");
   if(!map)initMap();
   setTimeout(()=>map.invalidateSize(),60);
@@ -284,32 +297,27 @@ function startGame(mode,seed){
   startRound();
 }
 /* ── 실물 사진 파이프라인 ──
-   우선순위: img/<id>.jpg(직접 업로드) → 위키백과 대표사진 → 위키미디어 커먼즈 실시간 검색 → SVG
-   ※ tld/phone/car/flag 는 검색 제외(국기는 이미 실사, 나머지는 '코드 자체'가 단서) */
-const photoCache={};
-const NOSEARCH={tld:1,phone:1,car:1,flag:1};
-function autoQuery(tr){
-  const en=tr.a.en.replace(/[^\x20-\x7E]/g," ").replace(/\s+/g," ").trim();
-  switch(tr.cat){
-    case"bollard":return "road delineator post "+en;
-    case"plate":return en+" vehicle registration plate";
-    case"platecode":return en+" license plate";
-    case"lang":return en+" street name sign";
-    case"sign":return en+" road sign";
-    case"pole":return en+" utility pole";
-    case"road":return en+" road markings";
-    default:return null;
-  }
+   우선순위: img/<id>.jpg → Mapillary(정답 좌표 주변의 실제 거리 사진) → 위키백과 → SVG
+   ※ 예전의 '커먼즈 텍스트 검색'은 엉뚱한 사진(예: 일본 사진이 프랑스 문제에)을
+      반환하는 치명적 오류가 있어 완전히 제거했습니다.
+      Mapillary는 정답 좌표의 bbox 안에서 촬영된 사진만 주므로 오답 사진이 원천 차단됩니다. */
+if(localStorage.getItem("plk_v")!=="2"){
+  Object.keys(localStorage).forEach(k=>{if(k.indexOf("plk_img_")===0)localStorage.removeItem(k);});
+  localStorage.setItem("plk_v","2");
 }
-function commonsSearch(q){
-  const url="https://commons.wikimedia.org/w/api.php?action=query&generator=search"
-    +"&gsrsearch="+encodeURIComponent(q+" filetype:bitmap")
-    +"&gsrnamespace=6&gsrlimit=6&prop=imageinfo&iiprop=url&iiurlwidth=1100&format=json&origin=*";
-  return fetch(url).then(r=>r.json()).then(j=>{
-    const pages=j.query&&j.query.pages?Object.values(j.query.pages):[];
-    pages.sort((a,b)=>(a.index||99)-(b.index||99));
-    return pages.map(p=>p.imageinfo&&p.imageinfo[0]&&(p.imageinfo[0].thumburl||p.imageinfo[0].url)).filter(Boolean);
-  }).catch(()=>[]);
+const photoPick={};
+function mapillaryReady(){return typeof MAPILLARY_TOKEN!=="undefined"&&MAPILLARY_TOKEN&&!/붙여넣기/.test(MAPILLARY_TOKEN);}
+function mapillaryFor(tr,grow){
+  if(!mapillaryReady())return Promise.resolve(null);
+  const span=Math.min(2.2,Math.max(0.12,tr.r0/111))*(grow||1);
+  const bbox=[tr.tgt[1]-span,tr.tgt[0]-span*0.7,tr.tgt[1]+span,tr.tgt[0]+span*0.7].join(",");
+  const url="https://graph.mapillary.com/images?access_token="+encodeURIComponent(MAPILLARY_TOKEN)
+    +"&fields=id,thumb_1024_url&limit=30&bbox="+bbox;
+  return fetch(url).then(r=>r.ok?r.json():null).then(j=>{
+    const arr=(j&&j.data||[]).map(x=>x.thumb_1024_url).filter(Boolean);
+    if(!arr.length)return grow?null:mapillaryFor(tr,3);
+    return arr[Math.floor(Math.random()*arr.length)];
+  }).catch(()=>null);
 }
 function loadWikiPhoto(tr){
   const t=(typeof WIKI!=="undefined")&&WIKI[tr.id];
@@ -320,42 +328,56 @@ function loadWikiPhoto(tr){
     .then(j=>j&&((j.originalimage&&j.originalimage.source)||(j.thumbnail&&j.thumbnail.source))||null)
     .catch(()=>null);
 }
-function loadFirstImage(urls,ok){
-  if(!urls||!urls.length)return;
-  const u=urls[0],im=new Image();
-  im.onload=()=>ok(im,u);
-  im.onerror=()=>loadFirstImage(urls.slice(1),ok);
-  im.referrerPolicy="no-referrer";
-  im.src=u;
-}
-function photoUrlsFor(tr){
-  if(photoCache[tr.id])return Promise.resolve(photoCache[tr.id]);
-  const saved=localStorage.getItem("plk_img_"+tr.id);
-  if(saved){const arr=JSON.parse(saved);photoCache[tr.id]=arr;return Promise.resolve(arr);}
-  return loadWikiPhoto(tr).then(wu=>{
-    const q=(typeof Q!=="undefined"&&Q[tr.id])||(!NOSEARCH[tr.cat]&&autoQuery(tr));
-    const p=q?commonsSearch(q):Promise.resolve([]);
-    return Promise.resolve(p).then(list=>{
-      const arr=(wu?[wu]:[]).concat(list);
-      photoCache[tr.id]=arr;
-      try{if(arr.length)localStorage.setItem("plk_img_"+tr.id,JSON.stringify(arr));}catch(e){}
-      return arr;
-    });
+function photoPromise(tr){
+  if(photoPick[tr.id])return photoPick[tr.id];
+  const p=new Promise(res=>{
+    const local=new Image();
+    local.onload=()=>res({url:"img/"+tr.id+".jpg",credit:null});
+    local.onerror=()=>{
+      mapillaryFor(tr).then(u=>{
+        if(u)return res({url:u,credit:"Mapillary"});
+        loadWikiPhoto(tr).then(w=>res(w?{url:w,credit:"Wikimedia Commons"}:null));
+      });
+    };
+    local.src="img/"+tr.id+".jpg";
   });
+  photoPick[tr.id]=p;return p;
 }
+/* 단서 칩: 실제 사진 위에 '코드형 단서'를 함께 표시 */
+function clueText(tr){const v=tr.v;
+  if(v.t==="tld")return "🔎 "+v.url;
+  if(v.t==="phone")return "🔎 "+(v.sub?v.sub+" · ":"")+v.num;
+  if(v.t==="plate")return "🔎 "+v.text+(v.region?" · "+v.region:"");
+  if(v.t==="lang")return "🔎 "+v.big;
+  return null;}
+function addClue(inner,tr){const c=clueText(tr);if(!c)return;
+  const d=document.createElement("div");d.className="clue-chip";d.textContent=c;inner.appendChild(d);}
+/* 이미지 확대/축소/이동 */
+let exZoom={s:1,x:0,y:0};
+function exApply(){const el=$("ex-inner");if(el)el.style.transform="translate("+exZoom.x+"px,"+exZoom.y+"px) scale("+exZoom.s+")";}
+function exReset(){exZoom={s:1,x:0,y:0};exApply();}
+function exScale(f){exZoom.s=Math.min(6,Math.max(1,exZoom.s*f));if(exZoom.s===1){exZoom.x=0;exZoom.y=0;}exApply();}
 function setExhibit(tr){
-  const box=$("exhibit"),hint=$("exhibit-hint");
-  box.innerHTML=renderTrick(tr);
+  const inner=$("ex-inner"),hint=$("exhibit-hint");
+  exReset();
   if(hint)hint.textContent=tt("exhibitHint");
-  const swap=(im,src)=>{
+  if(tr.v.t==="flag"){inner.innerHTML=renderTrick(tr);return;} // 국기는 실물 국기 이미지 즉시 표시
+  inner.innerHTML='<div class="ex-loading"><div class="spinner"></div></div>';
+  let done=false;
+  const showSvg=()=>{if(done||!G||G.tricks[G.round]!==tr)return;done=true;
+    inner.innerHTML=renderTrick(tr);};
+  const showPhoto=(r)=>{
     if(!G||G.tricks[G.round]!==tr)return;
-    box.innerHTML="";im.className="photo";box.appendChild(im);
-    if(hint&&src&&/wikimedia|wikipedia/.test(src))hint.textContent="📷 Wikimedia Commons · "+tt("exhibitHint");
+    const im=new Image();
+    im.onload=()=>{if(!G||G.tricks[G.round]!==tr)return;done=true;
+      inner.innerHTML="";im.className="photo";inner.appendChild(im);addClue(inner,tr);
+      if(hint)hint.textContent=(r.credit?"📷 "+r.credit+" · ":"")+tt("exhibitHint");};
+    im.onerror=()=>{if(!done)showSvg();};
+    im.referrerPolicy="no-referrer";im.src=r.url;
   };
-  const local=new Image();
-  local.onload=()=>swap(local,null);
-  local.onerror=()=>{photoUrlsFor(tr).then(arr=>loadFirstImage(arr,swap));};
-  local.src="img/"+tr.id+".jpg";
+  photoPromise(tr).then(r=>{r?showPhoto(r):showSvg();});
+  setTimeout(()=>{if(!done)showSvg();},5000); // 5초 내 사진 실패 시 일러스트 (사진이 늦게 오면 사진으로 교체됨)
+  if(G&&G.round<4)photoPromise(G.tricks[G.round+1]); // 다음 라운드 사진 미리 로드 → 즉시 표시
 }
 function startRound(){
   const tr=G.tricks[G.round];G.submitted=false;
@@ -604,6 +626,20 @@ $("map-expand").onclick=()=>{$("mapbox").classList.toggle("expanded");setTimeout
 $("study-filter").onchange=e=>renderStudy(e.target.value);
 window.addEventListener("resize",()=>map&&map.invalidateSize());
 $("join-code").addEventListener("keydown",e=>{if(e.key==="Enter")joinRoom();});
+
+/* exhibit zoom: 휠 확대 + 드래그 이동 + 버튼 */
+(function(){
+  const ex=$("exhibit");if(!ex)return;let drag=null;
+  ex.addEventListener("wheel",e=>{e.preventDefault();exScale(e.deltaY<0?1.25:0.8);},{passive:false});
+  ex.addEventListener("pointerdown",e=>{if(exZoom.s<=1)return;e.preventDefault();
+    drag={x:e.clientX-exZoom.x,y:e.clientY-exZoom.y};try{ex.setPointerCapture(e.pointerId);}catch(_){}});
+  ex.addEventListener("pointermove",e=>{if(!drag)return;exZoom.x=e.clientX-drag.x;exZoom.y=e.clientY-drag.y;exApply();});
+  ex.addEventListener("pointerup",()=>drag=null);
+  ex.addEventListener("pointercancel",()=>drag=null);
+  $("ex-plus").onclick=()=>exScale(1.4);
+  $("ex-minus").onclick=()=>exScale(0.7);
+  $("ex-reset").onclick=exReset;
+})();
 
 /* init */
 applyI18n();

@@ -293,46 +293,4 @@ const WIKI={
   "bo-de":"de:Leitpfosten"
 };
 
-/* ═══ 커먼즈 검색어 커스텀 (자동 검색어보다 적중률 높은 현지 용어) ═══ */
-const Q={
-  "bo-fr":"balise J6 route France",
-  "bo-de":"Leitpfosten",
-  "bo-at":"Leitpflock Österreich",
-  "bo-cz":"směrový sloupek",
-  "bo-it":"delineatore normale stradale",
-  "bo-es":"hito de arista carretera",
-  "bo-nl":"bermpaal Nederland",
-  "bo-pl":"słupek prowadzący U-1a",
-  "bo-hu":"vezetőoszlop út",
-  "bo-ro":"delineator post Romania road",
-  "bo-ru":"сигнальный столбик дорога",
-  "bo-au":"guide post road Australia reflector",
-  "bo-is":"road delineator Iceland yellow",
-  "sg-pare":"PARE stop sign Brazil",
-  "sg-alto":"ALTO stop sign Mexico",
-  "sg-arret":"arrêt stop sign Québec",
-  "sg-qif":"stop sign Arabic قف",
-  "sg-us55":"speed limit sign United States highway",
-  "sg-max50":"maximum speed limit sign Canada",
-  "sg-warnY":"varningsmärke Sweden road sign",
-  "sg-mwy-it":"autostrada segnale verde Italia",
-  "sg-mwy-fr":"panneau autoroute France",
-  "sg-borne":"borne kilométrique route France",
-  "sg-kanga":"kangaroo warning road sign Australia",
-  "po-ro":"concrete utility pole Romania",
-  "po-br":"poste de energia Brasil",
-  "po-jp":"電柱 日本",
-  "po-us":"wooden utility pole United States",
-  "rd-us":"double yellow line road United States",
-  "rd-no":"gul midtlinje vei Norge",
-  "rd-ie":"road markings Ireland yellow line",
-  "rd-uk":"double yellow lines street UK",
-  "lg-kr":"거리 도로명 표지판 한국",
-  "lg-jp":"日本 通り 標識",
-  "lg-hk":"Hong Kong street name sign Nathan Road",
-  "lg-tw":"Taiwan street name sign road",
-  "pc-jp-tk":"日本のナンバープレート 品川",
-  "pc-jp-osk":"日本のナンバープレート 大阪",
-  "pc-jp-sap":"日本のナンバープレート 札幌",
-  "pc-jp-oki":"日本のナンバープレート 沖縄"
-};
+
