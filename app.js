@@ -283,27 +283,78 @@ function startGame(mode,seed){
   $("dock").classList.add("hidden");$("ov-final").classList.add("hidden");
   startRound();
 }
-/* ── 실물 사진 파이프라인: img/<id>.jpg → 위키백과 대표사진 → SVG 일러스트 ── */
+/* ── 실물 사진 파이프라인 ──
+   우선순위: img/<id>.jpg(직접 업로드) → 위키백과 대표사진 → 위키미디어 커먼즈 실시간 검색 → SVG
+   ※ tld/phone/car/flag 는 검색 제외(국기는 이미 실사, 나머지는 '코드 자체'가 단서) */
 const photoCache={};
+const NOSEARCH={tld:1,phone:1,car:1,flag:1};
+function autoQuery(tr){
+  const en=tr.a.en.replace(/[^\x20-\x7E]/g," ").replace(/\s+/g," ").trim();
+  switch(tr.cat){
+    case"bollard":return "road delineator post "+en;
+    case"plate":return en+" vehicle registration plate";
+    case"platecode":return en+" license plate";
+    case"lang":return en+" street name sign";
+    case"sign":return en+" road sign";
+    case"pole":return en+" utility pole";
+    case"road":return en+" road markings";
+    default:return null;
+  }
+}
+function commonsSearch(q){
+  const url="https://commons.wikimedia.org/w/api.php?action=query&generator=search"
+    +"&gsrsearch="+encodeURIComponent(q+" filetype:bitmap")
+    +"&gsrnamespace=6&gsrlimit=6&prop=imageinfo&iiprop=url&iiurlwidth=1100&format=json&origin=*";
+  return fetch(url).then(r=>r.json()).then(j=>{
+    const pages=j.query&&j.query.pages?Object.values(j.query.pages):[];
+    pages.sort((a,b)=>(a.index||99)-(b.index||99));
+    return pages.map(p=>p.imageinfo&&p.imageinfo[0]&&(p.imageinfo[0].thumburl||p.imageinfo[0].url)).filter(Boolean);
+  }).catch(()=>[]);
+}
 function loadWikiPhoto(tr){
   const t=(typeof WIKI!=="undefined")&&WIKI[tr.id];
   if(!t)return Promise.resolve(null);
-  if(photoCache[tr.id]!==undefined)return Promise.resolve(photoCache[tr.id]);
   let lang="en",title=t;const m=t.match(/^([a-z]{2}):(.+)$/);if(m){lang=m[1];title=m[2];}
   return fetch("https://"+lang+".wikipedia.org/api/rest_v1/page/summary/"+encodeURIComponent(title))
     .then(r=>r.ok?r.json():null)
-    .then(j=>{const u=j&&((j.originalimage&&j.originalimage.source)||(j.thumbnail&&j.thumbnail.source))||null;
-      photoCache[tr.id]=u;return u;})
-    .catch(()=>{photoCache[tr.id]=null;return null;});
+    .then(j=>j&&((j.originalimage&&j.originalimage.source)||(j.thumbnail&&j.thumbnail.source))||null)
+    .catch(()=>null);
+}
+function loadFirstImage(urls,ok){
+  if(!urls||!urls.length)return;
+  const u=urls[0],im=new Image();
+  im.onload=()=>ok(im,u);
+  im.onerror=()=>loadFirstImage(urls.slice(1),ok);
+  im.referrerPolicy="no-referrer";
+  im.src=u;
+}
+function photoUrlsFor(tr){
+  if(photoCache[tr.id])return Promise.resolve(photoCache[tr.id]);
+  const saved=localStorage.getItem("plk_img_"+tr.id);
+  if(saved){const arr=JSON.parse(saved);photoCache[tr.id]=arr;return Promise.resolve(arr);}
+  return loadWikiPhoto(tr).then(wu=>{
+    const q=(typeof Q!=="undefined"&&Q[tr.id])||(!NOSEARCH[tr.cat]&&autoQuery(tr));
+    const p=q?commonsSearch(q):Promise.resolve([]);
+    return Promise.resolve(p).then(list=>{
+      const arr=(wu?[wu]:[]).concat(list);
+      photoCache[tr.id]=arr;
+      try{if(arr.length)localStorage.setItem("plk_img_"+tr.id,JSON.stringify(arr));}catch(e){}
+      return arr;
+    });
+  });
 }
 function setExhibit(tr){
-  const box=$("exhibit");
-  box.innerHTML=renderTrick(tr); // 일단 일러스트, 사진 로드되면 교체
-  const swap=im=>{if(G&&G.tricks[G.round]===tr){box.innerHTML="";im.className="photo";box.appendChild(im);}};
+  const box=$("exhibit"),hint=$("exhibit-hint");
+  box.innerHTML=renderTrick(tr);
+  if(hint)hint.textContent=tt("exhibitHint");
+  const swap=(im,src)=>{
+    if(!G||G.tricks[G.round]!==tr)return;
+    box.innerHTML="";im.className="photo";box.appendChild(im);
+    if(hint&&src&&/wikimedia|wikipedia/.test(src))hint.textContent="📷 Wikimedia Commons · "+tt("exhibitHint");
+  };
   const local=new Image();
-  local.onload=()=>swap(local);
-  local.onerror=()=>{loadWikiPhoto(tr).then(u=>{
-    if(!u)return;const w=new Image();w.onload=()=>swap(w);w.src=u;});};
+  local.onload=()=>swap(local,null);
+  local.onerror=()=>{photoUrlsFor(tr).then(arr=>loadFirstImage(arr,swap));};
   local.src="img/"+tr.id+".jpg";
 }
 function startRound(){
