@@ -345,24 +345,41 @@ function startRound(){
 /* ── 실물 사진 파이프라인 (정확도 우선: 커먼즈 국가별 카테고리) ──
    각 트릭 = 사람이 분류한 커먼즈 카테고리의 실사. 국기는 실물 국기 이미지.
    실사를 못 구하는 트릭은 아예 출제되지 않음(TRICKS 로드 시 필터). */
-if(localStorage.getItem("plk_v")!=="5"){
+if(localStorage.getItem("plk_v")!=="6"){
   Object.keys(localStorage).forEach(k=>{if(k.indexOf("plk_")===0&&k!=="plk_nick"&&k!=="plk_lang")localStorage.removeItem(k);});
-  localStorage.setItem("plk_v","5");
+  localStorage.setItem("plk_v","6");
 }
 const catCache={};
+// 파일 제목/설명에 이런 낱말이 있으면 지오게서 훈련에 쓸 수 없는 자료로 보고 제외한다.
+// (옛 사진, 삽화·그림, 규격 도면, 지도, 로고, 박물관 전시물 등)
+const BAD_WORDS=/(drawing|draw|illustration|illustrated|sketch|painting|paint|engraving|lithograph|woodcut|cartoon|comic|caricature|poster|diagram|schematic|blueprint|technical|specification|spec\b|standard|font|typeface|lettering|glyph|numerals?|template|chart|graph|map\b|plan\b|logo|icon|symbol|clipart|vector|svg|scan|scanned|document|manuscript|postcard|stamp|banknote|coin|museum|replica|model|miniature|toy|patent|blank|sample|mockup|1[0-9]{3}|historic|historical|vintage|antique|archive|archival|old photo|black.and.white|b&w|monochrome|sepia)/i;
+// 파일 제목에 연도가 1900~1999로 보이면 오래된 자료로 간주
+const OLD_YEAR=/\b(1[0-9]{3})\b/;
+function usableCommonsFile(pg){
+  const ii=pg.imageinfo&&pg.imageinfo[0];
+  if(!ii)return false;
+  if(!/^image\/(jpeg|png|webp)/.test(ii.mime||""))return false;
+  if(/\.svg/i.test(ii.url||""))return false;
+  const title=(pg.title||"")+" "+(ii.url||"");
+  if(BAD_WORDS.test(title))return false;
+  const ym=title.match(OLD_YEAR);
+  if(ym){const y=parseInt(ym[1],10);if(y<2005)return false;} // 2005년 이전 자료 제외
+  // 너무 작은 이미지는 저품질/도면일 확률이 높음
+  if(ii.width&&ii.height&&(ii.width<640||ii.height<420))return false;
+  // 세로로 길쭉한 문서 스캔 형태 제외
+  if(ii.width&&ii.height&&(ii.height/ii.width>1.9))return false;
+  return true;
+}
 function commonsCategoryImages(cat){
   if(catCache[cat])return catCache[cat];
   const url="https://commons.wikimedia.org/w/api.php?action=query&format=json&origin=*"
     +"&generator=categorymembers&gcmtype=file&gcmlimit=200"
     +"&gcmtitle="+encodeURIComponent("Category:"+cat)
-    +"&prop=imageinfo&iiprop=url|mime&iiurlwidth=1100";
+    +"&prop=imageinfo&iiprop=url|mime|size&iiurlwidth=1100";
   const p=fetch(url).then(r=>r.ok?r.json():null).then(j=>{
     const pages=j&&j.query&&j.query.pages?Object.values(j.query.pages):[];
-    const urls=pages.filter(pg=>pg.imageinfo&&pg.imageinfo[0]
-        &&/^image\/(jpeg|png|webp)/.test(pg.imageinfo[0].mime||"")
-        &&!/\.svg/i.test(pg.imageinfo[0].url||""))
+    return pages.filter(usableCommonsFile)
       .map(pg=>pg.imageinfo[0].thumburl||pg.imageinfo[0].url);
-    return urls;
   }).catch(()=>[]);
   catCache[cat]=p;return p;
 }
