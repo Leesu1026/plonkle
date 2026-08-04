@@ -18,8 +18,14 @@ function hash32(str){let h=2166136261;for(let i=0;i<str.length;i++){h^=str.charC
 function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);
   t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
 function shuffle(arr,rng){for(let i=arr.length-1;i>0;i--){const j=Math.floor(rng()*(i+1));[arr[i],arr[j]]=[arr[j],arr[i]];}}
+// 경도를 -180~180으로 정규화 (지도가 좌우로 반복되어도 같은 지점으로 취급)
+function normLng(lng){return ((lng+180)%360+360)%360-180;}
 function haversine(a,b){const R=6371,rad=x=>x*Math.PI/180;
-  const dLat=rad(b[0]-a[0]),dLng=rad(b[1]-a[1]);
+  // 두 지점의 경도 차는 항상 지구를 도는 '가장 짧은 쪽'으로 계산해야 한다.
+  let dLngDeg=normLng(b[1])-normLng(a[1]);
+  if(dLngDeg>180)dLngDeg-=360;
+  if(dLngDeg<-180)dLngDeg+=360;
+  const dLat=rad(b[0]-a[0]),dLng=rad(dLngDeg);
   const h=Math.sin(dLat/2)**2+Math.cos(rad(a[0]))*Math.cos(rad(b[0]))*Math.sin(dLng/2)**2;
   return 2*R*Math.asin(Math.sqrt(h));}
 function scoreFor(tr,d){if(d<=tr.r0)return 5000;return Math.max(0,Math.round(5000*Math.exp(-(d-tr.r0)/tr.s)));}
@@ -229,7 +235,7 @@ function renderTrick(tr){
 }
 
 /* ═══════════ 지도 ═══════════ */
-let map=null,guessMarker=null,resultLayers=[],mapLocked=false,pendingGuess=null;
+let map=null,guessMarker=null,resultLayers=[],mapLocked=false,pendingGuess=null,pendingGuessRaw=null;
 function initMap(){
   map=L.map("map",{worldCopyJump:true,minZoom:2,maxZoom:20,zoomControl:true}).setView([30,10],3);
   // 라벨 없는 지형 베이스
@@ -259,13 +265,16 @@ function initMap(){
   $("mapbox").addEventListener("mouseleave",()=>setTimeout(()=>map.invalidateSize(),280));
 }
 function setGuessPin(latlng){
-  pendingGuess=latlng;
+  // 핀은 사용자가 클릭한 자리에 그대로 두되(시각적 이질감 방지),
+  // 채점·결과선에 쓰는 좌표는 -180~180으로 정규화해 보관한다.
+  pendingGuess=L.latLng(latlng.lat,normLng(latlng.lng));
+  pendingGuessRaw=latlng;
   if(!guessMarker)guessMarker=L.marker(latlng).addTo(map);
   else guessMarker.setLatLng(latlng);
   const b=$("btn-guess");b.disabled=false;b.textContent=tt("guessGo");
 }
 function resetMapForRound(){
-  mapLocked=false;pendingGuess=null;
+  mapLocked=false;pendingGuess=null;pendingGuessRaw=null;
   if(guessMarker){map.removeLayer(guessMarker);guessMarker=null;}
   resultLayers.forEach(l=>map.removeLayer(l));resultLayers=[];
   map.setView([30,10],3);
@@ -280,16 +289,37 @@ let G=null,timerInt=null;
 // 실사 확보 가능한 트릭만 출제 대상 (커먼즈 카테고리 있음 or 국기)
 const POOL=TRICKS.filter(t=>t.v.t==="flag"||(typeof COMMONS!=="undefined"&&COMMONS[t.id]));
 function getRecent(){try{return JSON.parse(localStorage.getItem("plk_recent")||"[]");}catch(e){return[];}}
-function pushRecent(ids){try{localStorage.setItem("plk_recent",JSON.stringify([...ids,...getRecent()].slice(0,60)));}catch(e){}}
+function pushRecent(ids){try{localStorage.setItem("plk_recent",JSON.stringify([...ids,...getRecent()].slice(0,200)));}catch(e){}}
 function pickTricks(rng,avoidRecent){
-  let pool=[...POOL.keys()];
-  if(avoidRecent){const rec=new Set(getRecent());
-    const f=pool.filter(i=>!rec.has(TRICKS[i].id));
-    if(f.length>=40)pool=f;}
+  let pool=POOL.slice();
+  if(avoidRecent){
+    const rec=new Set(getRecent());
+    const fresh=pool.filter(t=>!rec.has(t.id));
+    // 최근에 안 나온 것 우선. 남은 게 너무 적으면 전체에서 뽑되 최근 것은 뒤로 밀기
+    pool=fresh.length>=5?fresh:pool.slice().sort((a,b)=>(rec.has(a.id)?1:0)-(rec.has(b.id)?1:0));
+  }
   shuffle(pool,rng);
-  const chosen=[],cats=new Set();
-  for(const i of pool){const tr=POOL[i];if(cats.has(tr.cat))continue;chosen.push(tr);cats.add(tr.cat);if(chosen.length===5)break;}
-  let j=0;while(chosen.length<5&&j<pool.length){const tr=POOL[pool[j++]];if(!chosen.includes(tr))chosen.push(tr);}
+  const chosen=[],catCount={};
+  // 1차: 카테고리당 최대 1개로 다양성 확보
+  for(const tr of pool){
+    if((catCount[tr.cat]||0)>=1)continue;
+    chosen.push(tr);catCount[tr.cat]=1;
+    if(chosen.length===5)break;
+  }
+  // 2차: 그래도 5개가 안 되면 카테고리당 최대 2개까지 허용
+  if(chosen.length<5){
+    for(const tr of pool){
+      if(chosen.includes(tr))continue;
+      if((catCount[tr.cat]||0)>=2)continue;
+      chosen.push(tr);catCount[tr.cat]=(catCount[tr.cat]||0)+1;
+      if(chosen.length===5)break;
+    }
+  }
+  // 3차: 최후 수단 - 무조건 5개 채우기
+  for(const tr of pool){
+    if(chosen.length>=5)break;
+    if(!chosen.includes(tr))chosen.push(tr);
+  }
   return chosen;
 }
 function startGame(mode,seed){
@@ -315,15 +345,15 @@ function startRound(){
 /* ── 실물 사진 파이프라인 (정확도 우선: 커먼즈 국가별 카테고리) ──
    각 트릭 = 사람이 분류한 커먼즈 카테고리의 실사. 국기는 실물 국기 이미지.
    실사를 못 구하는 트릭은 아예 출제되지 않음(TRICKS 로드 시 필터). */
-if(localStorage.getItem("plk_v")!=="3"){
+if(localStorage.getItem("plk_v")!=="5"){
   Object.keys(localStorage).forEach(k=>{if(k.indexOf("plk_")===0&&k!=="plk_nick"&&k!=="plk_lang")localStorage.removeItem(k);});
-  localStorage.setItem("plk_v","3");
+  localStorage.setItem("plk_v","5");
 }
 const catCache={};
 function commonsCategoryImages(cat){
   if(catCache[cat])return catCache[cat];
   const url="https://commons.wikimedia.org/w/api.php?action=query&format=json&origin=*"
-    +"&generator=categorymembers&gcmtype=file&gcmlimit=60"
+    +"&generator=categorymembers&gcmtype=file&gcmlimit=200"
     +"&gcmtitle="+encodeURIComponent("Category:"+cat)
     +"&prop=imageinfo&iiprop=url|mime&iiurlwidth=1100";
   const p=fetch(url).then(r=>r.ok?r.json():null).then(j=>{
@@ -344,17 +374,23 @@ function trickPhotoUrls(tr){
 }
 function loadImg(url){return new Promise((res,rej)=>{const im=new Image();
   im.referrerPolicy="no-referrer";im.onload=()=>res(im);im.onerror=rej;im.src=url;});}
-const photoReady={}; // trickId -> Promise<[loadedUrl,...]> (verified loadable)
+// 같은 트릭이라도 매번 카테고리 안의 '다른 사진'을 뽑아 새 문제처럼 만든다.
+// (사진 한 장 = 사실상 문제 하나 → 체감 문제 수가 수천 개로 늘어남)
+const shownPhotos={}; // trickId -> 이번 세션에 이미 보여준 사진 URL 집합
 function preparePhotos(tr){
-  if(photoReady[tr.id])return photoReady[tr.id];
   const local="img/"+tr.id+".jpg";
-  const p=loadImg(local).then(()=>[local]).catch(()=>
+  return loadImg(local).then(()=>[local]).catch(()=>
     trickPhotoUrls(tr).then(list=>{
-      // verify first few actually load; shuffle for variety
-      const arr=[...list];for(let i=arr.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[arr[i],arr[j]]=[arr[j],arr[i]];}
-      return arr.slice(0,10);
+      if(!list||!list.length)return [];
+      const seen=shownPhotos[tr.id]||(shownPhotos[tr.id]=new Set());
+      // 아직 안 나온 사진 우선, 다 봤으면 초기화하고 다시 전체에서 뽑기
+      let fresh=list.filter(u=>!seen.has(u));
+      if(!fresh.length){seen.clear();fresh=list.slice();}
+      for(let i=fresh.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[fresh[i],fresh[j]]=[fresh[j],fresh[i]];}
+      const pick=fresh.slice(0,8);
+      if(pick[0])seen.add(pick[0]);
+      return pick;
     }));
-  photoReady[tr.id]=p;return p;
 }
 /* 이미지 확대/축소/이동 */
 let exZoom={s:1,x:0,y:0};
@@ -366,13 +402,22 @@ function setExhibit(tr){
   exReset();
   if(hint)hint.textContent=tt("exhibitHint");
   const mine=()=>G&&G.tricks[G.round]===tr;
-  // 1) 즉시 일러스트로 문제를 띄워 게임이 절대 멈추지 않게 한다
-  inner.innerHTML=renderTrick(tr);
-  // 2) 실사가 준비되면 조용히 교체 (국기 포함)
+  // 모든 문제는 실사(위키미디어 커먼즈)만 사용한다.
+  // 코드로 그린 도식 일러스트는 출제에 쓰지 않는다.
+  // (국기는 실물 국기 이미지를 쓰므로 아래에서 별도 처리)
+  const strict=true;
+  if(strict){
+    inner.innerHTML='<div class="ex-loading"><div class="spinner"></div></div>';
+  }else{
+    // 그 외 카테고리: 즉시 도식 일러스트로 띄워 게임이 멈추지 않게 하고, 실사 오면 교체
+    inner.innerHTML=renderTrick(tr);
+  }
   const showPhoto=urls=>{
-    if(!mine()||!urls||!urls.length)return;
+    if(!mine())return;
+    if(!urls||!urls.length){ if(strict)skipTrick(tr); return; }
     let i=0;const step=()=>{
-      if(!mine()||i>=urls.length)return;
+      if(!mine())return;
+      if(i>=urls.length){ if(strict)skipTrick(tr); return; }
       loadImg(urls[i]).then(im=>{
         if(!mine())return;im.className="photo";inner.innerHTML="";inner.appendChild(im);
         if(hint)hint.textContent="📷 Wikimedia Commons · "+tt("exhibitHint");
@@ -383,6 +428,28 @@ function setExhibit(tr){
   preparePhotos(tr).then(showPhoto);
   if(G&&G.round<4)preparePhotos(G.tricks[G.round+1]); // prefetch 다음 라운드
 }
+// 실사를 못 구한 언어 트릭을 실사 가능한 다른 트릭으로 교체 (무한루프 방지)
+function skipTrick(failed){
+  if(!G)return;
+  if(!G.dead)G.dead=new Set();
+  if(failed)G.dead.add(failed.id);
+  const used=new Set(G.tricks.map(t=>t.id));
+  const cands=POOL.filter(t=>!used.has(t.id)&&!G.dead.has(t.id));
+  for(let k=cands.length-1;k>0;k--){const j=Math.floor(Math.random()*(k+1));[cands[k],cands[j]]=[cands[j],cands[k]];}
+  const pick=cands[0];
+  // 안전장치: 실사를 8번 연속 못 구하면(예: 오프라인) 게임이 멈추지 않도록
+  // 도식 이미지로라도 문제를 진행한다.
+  if(!pick||G.dead.size>=8){
+    const tr=G.tricks[G.round];
+    $("ex-inner").innerHTML=renderTrick(tr);
+    const h=$("exhibit-hint");
+    if(h)h.textContent="⚠ 실사 사진을 불러오지 못했습니다 · "+tt("exhibitHint");
+    return;
+  }
+  G.tricks[G.round]=pick;
+  $("exhibit-cat").textContent="EXHIBIT · "+(CATS[pick.cat][LANG]||CATS[pick.cat].en);
+  setExhibit(pick);
+}
 function submitGuess(auto){
   if(!G||G.submitted)return;
   G.submitted=true;mapLocked=true;clearInterval(timerInt);
@@ -391,12 +458,17 @@ function submitGuess(auto){
   if(pendingGuess){g=[pendingGuess.lat,pendingGuess.lng];d=haversine(g,tr.tgt);sc=scoreFor(tr,d);}
   G.scores.push(sc);G.total+=sc;
   $("hud-score").textContent=G.total;
-  const tgt=L.latLng(tr.tgt[0],tr.tgt[1]);
+  // 사용자가 클릭한 세계(복사본)와 같은 쪽에 정답 마커를 그린다.
+  // 그래야 오른쪽으로 넘긴 지도에서 찍어도 결과선이 지구를 가로지르지 않는다.
+  const refLng=pendingGuessRaw?pendingGuessRaw.lng:tr.tgt[1];
+  const tgtLng=tr.tgt[1]+Math.round((refLng-tr.tgt[1])/360)*360;
+  const tgt=L.latLng(tr.tgt[0],tgtLng);
   const tm=L.circleMarker(tgt,{radius:9,color:"#0b3d1e",weight:2,fillColor:"#5EBF82",fillOpacity:1});
   resultLayers.push(tm.addTo(map));
   tm.bindTooltip(tr.a[LANG]||tr.a.ko,{permanent:true,direction:"top",offset:[0,-10]});
   $("mapbox").classList.add("expanded");
-  if(g){const line=L.polyline([L.latLng(g[0],g[1]),tgt],{color:"#FFC24B",weight:3,dashArray:"7 7"});
+  if(g){const from=pendingGuessRaw||L.latLng(g[0],g[1]);
+    const line=L.polyline([from,tgt],{color:"#FFC24B",weight:3,dashArray:"7 7"});
     resultLayers.push(line.addTo(map));
     setTimeout(()=>{map.invalidateSize();map.fitBounds(line.getBounds().pad(0.45));},330);
   }else setTimeout(()=>{map.invalidateSize();map.setView(tgt,4);},330);
@@ -584,23 +656,37 @@ function buildStudy(){
 function renderStudy(cat){
   const grid=$("study-grid");
   const list=POOL.filter(tr=>cat==="all"||tr.cat===cat);
-  grid.innerHTML=list.map(tr=>
+  grid.innerHTML=`<div class="study-count">총 ${list.length}개</div>`+list.map(tr=>
     `<div class="study-card" data-tid="${tr.id}"><div class="exhibit"><div class="ex-loading" style="min-height:150px"><div class="spinner"></div></div></div>
      <h4>${esc(tr.a[LANG]||tr.a.ko)}</h4><p>${esc(tr.e)}</p></div>`).join("");
-  list.forEach(tr=>{
+  const byId={};list.forEach(tr=>byId[tr.id]=tr);
+  const fill=cardEl=>{
+    if(!cardEl||cardEl.dataset.done)return;
+    cardEl.dataset.done="1";
+    const tr=byId[cardEl.dataset.tid];if(!tr)return;
+    const card=cardEl.querySelector('.exhibit');if(!card)return;
+    if(tr.v.t==="flag"){
+      loadImg("https://flagcdn.com/w320/"+tr.v.code+".png")
+        .then(im=>{im.className="photo";card.innerHTML="";card.appendChild(im);})
+        .catch(()=>{cardEl.remove();});
+      return;}
     preparePhotos(tr).then(urls=>{
-      const cardEl=grid.querySelector('[data-tid="'+tr.id+'"]');
-      const card=cardEl&&cardEl.querySelector('.exhibit');if(!card)return;
-      if(tr.v.t==="flag"){
-        loadImg("https://flagcdn.com/w320/"+tr.v.code+".png").then(im=>{im.className="photo";card.innerHTML="";card.appendChild(im);})
-          .catch(()=>{if(cardEl)cardEl.remove();});
-        return;}
       const first=(urls&&urls[0]);
-      if(!first){if(cardEl)cardEl.remove();return;} // 실사 없으면 카드 제거(일러스트 금지)
+      if(!first){cardEl.remove();return;} // 실사 없으면 카드 제거(일러스트 금지)
       loadImg(first).then(im=>{im.className="photo";card.innerHTML="";card.appendChild(im);})
-        .catch(()=>{if(cardEl)cardEl.remove();});
+        .catch(()=>{cardEl.remove();});
     });
-  });
+  };
+  // 화면에 보이는 카드만 순차적으로 사진을 불러온다(수백 개 동시 요청 방지)
+  const cards=[...grid.querySelectorAll('.study-card')];
+  if("IntersectionObserver" in window){
+    const io=new IntersectionObserver(ents=>{
+      ents.forEach(e=>{if(e.isIntersecting){fill(e.target);io.unobserve(e.target);}});
+    },{root:grid,rootMargin:"300px"});
+    cards.forEach(c=>io.observe(c));
+  }else{
+    cards.slice(0,40).forEach(fill);
+  }
 }
 
 /* ═══════════ 이벤트 바인딩 ═══════════ */
