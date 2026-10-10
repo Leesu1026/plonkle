@@ -11,7 +11,9 @@ function applyI18n(){
 }
 let toastTimer=null;
 function toast(msg){const el=$("toast");el.textContent=msg;el.classList.remove("hidden");
-  clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.add("hidden"),2600);}
+  // 긴 안내문은 읽을 시간을 더 준다
+  const ms=Math.min(9000,Math.max(2600,String(msg).length*110));
+  clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.add("hidden"),ms);}
 function show(id){document.querySelectorAll(".screen").forEach(s=>s.classList.remove("active"));$(id).classList.add("active");}
 function todayStr(){const d=new Date();return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");}
 function hash32(str){let h=2166136261;for(let i=0;i<str.length;i++){h^=str.charCodeAt(i);h=Math.imul(h,16777619);}return h>>>0;}
@@ -237,28 +239,26 @@ function renderTrick(tr){
 /* ═══════════ 지도 ═══════════ */
 let map=null,guessMarker=null,resultLayers=[],mapLocked=false,pendingGuess=null,pendingGuessRaw=null;
 function initMap(){
-  map=L.map("map",{worldCopyJump:true,minZoom:2,maxZoom:20,zoomControl:true}).setView([30,10],3);
-  // 라벨 없는 지형 베이스
-  L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager_nolabels/{z}/{x}/{y}{r}.png",{
-    subdomains:"abcd",maxZoom:20,keepBuffer:6,updateWhenIdle:false,updateWhenZooming:true,
-    attribution:"&copy; OpenStreetMap &copy; CARTO"
+  map=L.map("map",{worldCopyJump:true,minZoom:2,maxZoom:19,zoomControl:true}).setView([30,10],3);
+  // 베이스 타일: OpenStreetMap 표준 (API 키 불필요, 국가명·지하철역·POI 모두 표시)
+  // ※ CARTO 타일은 2026년부터 API 키를 요구하므로 사용하지 않습니다.
+  const base=L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",{
+    maxZoom:19,keepBuffer:6,updateWhenIdle:false,updateWhenZooming:true,
+    crossOrigin:true,attribution:"&copy; OpenStreetMap contributors"
   }).addTo(map);
-  // 영어 라벨 오버레이 (낮은 배율부터 국가명이 보이도록 항상 위에)
-  const labels=L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}{r}.png",{
-    subdomains:"abcd",maxZoom:20,keepBuffer:6,pane:"markerPane",opacity:1
-  }).addTo(map);
+  // 타일 서버가 막히면 자동으로 예비 서버로 교체
+  let swapped=false,errCount=0;
+  base.on("tileerror",()=>{
+    if(swapped||++errCount<6)return;
+    swapped=true;
+    base.setUrl("https://tile.openstreetmap.de/{z}/{x}/{y}.png");
+  });
   // 적도·회귀선·날짜변경선 안내선 (WorldGuessr 스타일)
   const guide={color:"#c0392b",weight:1,opacity:.55,dashArray:"6 6",interactive:false};
   [[0,"#c0392b",.55],[23.4366,"#888",.45],[-23.4366,"#888",.45]].forEach(([lat,c,o])=>{
     L.polyline([[lat,-540],[lat,540]],{...guide,color:c,opacity:o}).addTo(map);});
   L.polyline([[-85,180],[85,180]],{...guide,color:"#888",opacity:.45}).addTo(map);
   L.polyline([[-85,-180],[85,-180]],{...guide,color:"#888",opacity:.45}).addTo(map);
-  // 고배율에선 상세 정보(지하철역·POI·노선 등)가 풍부한 OSM 표준 타일로 전환
-  const detail=L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-    {maxZoom:19,keepBuffer:6,attribution:"&copy; OpenStreetMap"});
-  map.on("zoomend",()=>{const z=map.getZoom();
-    if(z>=13){if(!map.hasLayer(detail)){detail.addTo(map);}map.removeLayer(labels);}
-    else{if(map.hasLayer(detail))map.removeLayer(detail);if(!map.hasLayer(labels))labels.addTo(map);}});
   map.on("click",e=>{if(!mapLocked)setGuessPin(e.latlng);});
   $("mapbox").addEventListener("transitionend",()=>map.invalidateSize());
   $("mapbox").addEventListener("mouseenter",()=>setTimeout(()=>map.invalidateSize(),280));
@@ -526,21 +526,48 @@ function finishGame(){
 /* ═══════════ Firebase ═══════════ */
 let db=null,fbAuth=null,uid=null,online=false;
 function setOnline(v){online=v;$("online-status").textContent=v?"🟢 "+tt("online"):"⚪ "+tt("offline");}
+let fbProblem=null; // 어느 단계에서 막혔는지 사용자에게 알려주기 위한 진단 메시지
 function fbInit(){
+  const C=(typeof FIREBASE_CONFIG!=="undefined")?FIREBASE_CONFIG:null;
+  const bad=v=>!v||/붙여넣기/.test(String(v));
+  if(!C||bad(C.apiKey)){
+    fbProblem="config.js에 Firebase 설정값을 넣어주세요 (apiKey 등이 비어 있음)";
+    setOnline(false);console.warn("[Plonkle]",fbProblem);return;
+  }
+  if(bad(C.databaseURL)){
+    fbProblem="config.js의 databaseURL이 비어 있어요. Firebase 콘솔에서 Realtime Database를 만든 뒤 그 주소를 넣어주세요";
+    setOnline(false);console.warn("[Plonkle]",fbProblem);return;
+  }
+  if(typeof firebase==="undefined"){
+    fbProblem="Firebase SDK를 불러오지 못했어요 (네트워크 차단 또는 index.html의 스크립트 누락)";
+    setOnline(false);console.warn("[Plonkle]",fbProblem);return;
+  }
   try{
-    if(typeof FIREBASE_CONFIG==="undefined"||!FIREBASE_CONFIG.apiKey||/붙여넣기/.test(FIREBASE_CONFIG.apiKey)){setOnline(false);return;}
-    firebase.initializeApp(FIREBASE_CONFIG);
+    firebase.initializeApp(C);
     fbAuth=firebase.auth();db=firebase.database();
-    fbAuth.onAuthStateChanged(u=>{if(u){uid=u.uid;setOnline(true);}});
-    fbAuth.signInAnonymously().catch(()=>setOnline(false));
-  }catch(e){setOnline(false);}
+    fbAuth.onAuthStateChanged(u=>{if(u){uid=u.uid;fbProblem=null;setOnline(true);}});
+    fbAuth.signInAnonymously().catch(err=>{
+      const c=(err&&err.code)||"";
+      if(/operation-not-allowed/.test(c))
+        fbProblem="Firebase 콘솔 → Authentication → Sign-in method 에서 '익명(Anonymous)'을 사용 설정해 주세요";
+      else if(/api-key|invalid/.test(c))
+        fbProblem="apiKey가 올바르지 않아요. Firebase 콘솔의 웹 앱 설정값을 다시 복사해 주세요";
+      else if(/configuration-not-found/.test(c))
+        fbProblem="이 프로젝트에 웹 앱이 등록되지 않았거나 Authentication이 시작되지 않았어요";
+      else fbProblem="Firebase 로그인 실패: "+(c||err);
+      setOnline(false);console.warn("[Plonkle]",fbProblem,err);
+    });
+  }catch(e){
+    fbProblem="Firebase 초기화 실패: "+(e&&e.message||e);
+    setOnline(false);console.warn("[Plonkle]",fbProblem,e);
+  }
 }
-function needOnline(){if(!online||!uid){toast(tt("needFirebase"));return true;}return false;}
+function needOnline(){if(!online||!uid){toast(fbProblem||tt("needFirebase"));return true;}return false;}
 
 /* ── 데일리 ── */
 function dailySeed(){return hash32("plonkle-"+todayStr());}
 function dailySubmit(){
-  if(!online||!uid){toast(tt("needFirebase"));return;}
+  if(!online||!uid){toast(fbProblem||tt("needFirebase"));return;}
   const ref=db.ref("daily/"+todayStr()+"/"+uid);
   const total=G.total,name=NICK||"???";
   ref.transaction(cur=>{if(cur&&cur.score>=total)return cur;return{name,score:total,ts:Date.now()};})
