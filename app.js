@@ -8,6 +8,7 @@ function applyI18n(){
   $("lang-label").textContent=LANG==="ko"?"한국어":"English";
   $("nick-label").textContent=NICK||(LANG==="ko"?"닉네임":"Nickname");
   $("daily-date-label").textContent=todayStr();
+  if(typeof applyMapLang==="function")applyMapLang();
 }
 let toastTimer=null;
 function toast(msg){const el=$("toast");el.textContent=msg;el.classList.remove("hidden");
@@ -238,21 +239,50 @@ function renderTrick(tr){
 
 /* ═══════════ 지도 ═══════════ */
 let map=null,guessMarker=null,resultLayers=[],mapLocked=false,pendingGuess=null,pendingGuessRaw=null;
+/* ── 지도 라벨 언어 (GeoGuessr 방식: 내 언어 이름 크게 + 현지 이름 작게) ── */
+let glMap=null;
+function mapLabelExpr(){
+  const k="name:"+(LANG==="en"?"en":LANG);
+  return ["case",
+    ["all",["has",k],["!=",["get",k],["get","name"]]],
+    ["format",["get",k],{},"\n",{},["get","name"],{"font-scale":0.8}],
+    ["coalesce",["get",k],["get","name_en"],["get","name"]]];
+}
+function applyMapLang(){
+  if(!glMap||!glMap.isStyleLoaded())return;
+  const expr=mapLabelExpr();
+  for(const l of glMap.getStyle().layers){
+    if(l.type!=="symbol")continue;
+    const tf=l.layout&&l.layout["text-field"];
+    // 지명(name)을 쓰는 라벨만 바꾸고, 도로 번호(ref) 방패는 그대로 둔다
+    if(!tf||!JSON.stringify(tf).includes('"name'))continue;
+    glMap.setLayoutProperty(l.id,"text-field",expr);
+  }
+}
+function webglOK(){try{const c=document.createElement("canvas");return !!(c.getContext("webgl2")||c.getContext("webgl"));}catch(e){return false;}}
+function addRasterFallback(){
+  if(map._rasterFallback)return;
+  map._rasterFallback=L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",{
+    maxZoom:19,keepBuffer:6,attribution:"&copy; OpenStreetMap contributors"}).addTo(map);
+}
 function initMap(){
   map=L.map("map",{worldCopyJump:true,minZoom:2,maxZoom:19,zoomControl:true}).setView([30,10],3);
-  // 베이스 타일: OpenStreetMap 표준 (API 키 불필요, 국가명·지하철역·POI 모두 표시)
-  // ※ CARTO 타일은 2026년부터 API 키를 요구하므로 사용하지 않습니다.
-  const base=L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",{
-    maxZoom:19,keepBuffer:6,updateWhenIdle:false,updateWhenZooming:true,
-    crossOrigin:true,attribution:"&copy; OpenStreetMap contributors"
-  }).addTo(map);
-  // 타일 서버가 막히면 자동으로 예비 서버로 교체
-  let swapped=false,errCount=0;
-  base.on("tileerror",()=>{
-    if(swapped||++errCount<6)return;
-    swapped=true;
-    base.setUrl("https://tile.openstreetmap.de/{z}/{x}/{y}.png");
-  });
+  // 벡터 지도(OpenFreeMap, API 키·요금 없음) + 라벨을 한국어/영어로 표시
+  if(typeof L.maplibreGL==="function"&&webglOK()){
+    const layer=L.maplibreGL({
+      style:"https://tiles.openfreemap.org/styles/liberty",
+      // 한글·한자·가나는 기기 폰트로 그려 깨짐 없이 표시
+      localIdeographFontFamily:"'Noto Sans KR','Malgun Gothic','Apple SD Gothic Neo','Noto Sans CJK KR',sans-serif",
+      attributionControl:{customAttribution:'<a href="https://openfreemap.org" target="_blank">OpenFreeMap</a> © <a href="https://www.openmaptiles.org/" target="_blank">OpenMapTiles</a> Data from <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a>'}
+    }).addTo(map);
+    glMap=layer.getMaplibreMap();
+    let loaded=false;
+    glMap.on("load",()=>{loaded=true;applyMapLang();});
+    // 지도 서버에 접속하지 못하면 기본 OSM 지도로 대체
+    setTimeout(()=>{if(!loaded){console.warn("[Plonkle] 벡터 지도 로드 실패 → OSM 지도로 대체");addRasterFallback();}},10000);
+  }else{
+    addRasterFallback();
+  }
   // 적도·회귀선·날짜변경선 안내선 (WorldGuessr 스타일)
   const guide={color:"#c0392b",weight:1,opacity:.55,dashArray:"6 6",interactive:false};
   [[0,"#c0392b",.55],[23.4366,"#888",.45],[-23.4366,"#888",.45]].forEach(([lat,c,o])=>{
