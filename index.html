@@ -63,8 +63,8 @@
 
 <section id="scr-wait" class="screen">
   <div class="panel narrow center">
-    <h2 data-i18n="waiting">상대 기다리는 중…</h2>
-    <p class="dim" data-i18n="shareCode">친구에게 이 코드를 알려주세요</p>
+    <h2 id="wait-title" data-i18n="waiting">상대 기다리는 중…</h2>
+    <p class="dim" id="wait-sub" data-i18n="shareCode">친구에게 이 코드를 알려주세요</p>
     <div class="roomcode" id="room-code-view">—</div>
     <div class="spinner"></div>
     <button class="btn ghost" id="btn-cancel-room" data-i18n="cancel">취소</button>
@@ -91,7 +91,7 @@
         <div class="ex-ctrl">
           <button id="ex-plus" title="확대">＋</button>
           <button id="ex-minus" title="축소">－</button>
-          <button id="ex-reset" title="원래대로">⟳</button>
+          <button id="ex-reset" title="처음 크기로">1:1</button>
         </div>
       </div>
       <div class="exhibit-hint" id="exhibit-hint" data-i18n="exhibitHint">이 단서만 보고 지도에 핀을 꽂으세요</div>
@@ -111,6 +111,7 @@
     <div class="dock-nums"><b id="dock-points">0</b><span data-i18n="pts">점</span> · <span id="dock-dist">—</span></div>
     <div class="dock-opp hidden" id="dock-opp"></div>
     <div class="dock-explain" id="dock-explain"></div>
+    <a class="dock-credit hidden" id="dock-credit" target="_blank" rel="noopener"></a>
     <button class="btn accent" id="dock-next" data-i18n="next">다음 라운드</button>
   </div>
 
@@ -138,6 +139,17 @@
   </header>
   <div class="study-grid" id="study-grid"></div>
 </section>
+
+
+<!-- ═══════════ NICKNAME ═══════════ -->
+<div class="overlay hidden" id="ov-nick">
+  <div class="result-card nick-card">
+    <h2 data-i18n="nickTitle">닉네임 정하기</h2>
+    <input id="nick-input" maxlength="10" autocomplete="off" spellcheck="false">
+    <div class="nick-help"><span id="nick-rule" data-i18n="nickRule">1글자부터 10글자까지 쓸 수 있어요</span><span id="nick-count">0 / 10</span></div>
+    <div class="rowbtns"><button class="btn" id="nick-cancel" data-i18n="cancel">취소</button><button class="btn accent" id="nick-ok" data-i18n="save">저장</button></div>
+  </div>
+</div>
 
 <div class="toast hidden" id="toast"></div>
 

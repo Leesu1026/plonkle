@@ -267,6 +267,7 @@ function addRasterFallback(){
 }
 function initMap(){
   map=L.map("map",{worldCopyJump:true,minZoom:2,maxZoom:19,zoomControl:true}).setView([30,10],3);
+  map.attributionControl.setPrefix("Leaflet"); // 출처 표기는 남기되 게임 중에는 눌러도 이동하지 않게(style.css)
   // 벡터 지도(OpenFreeMap, API 키·요금 없음) + 라벨을 한국어/영어로 표시
   if(typeof L.maplibreGL==="function"&&webglOK()){
     const layer=L.maplibreGL({
@@ -370,57 +371,79 @@ function startRound(){
   $("exhibit-cat").textContent="EXHIBIT · "+(CATS[tr.cat][LANG]||CATS[tr.cat].en);
   setExhibit(tr);
   resetMapForRound();
-  if(G.mode==="battle")startBattleTimer();
 }
 /* ── 실물 사진 파이프라인 (정확도 우선: 커먼즈 국가별 카테고리) ──
    각 트릭 = 사람이 분류한 커먼즈 카테고리의 실사. 국기는 실물 국기 이미지.
    실사를 못 구하는 트릭은 아예 출제되지 않음(TRICKS 로드 시 필터). */
-if(localStorage.getItem("plk_v")!=="6"){
+if(localStorage.getItem("plk_v")!=="8"){
   Object.keys(localStorage).forEach(k=>{if(k.indexOf("plk_")===0&&k!=="plk_nick"&&k!=="plk_lang")localStorage.removeItem(k);});
-  localStorage.setItem("plk_v","6");
+  localStorage.setItem("plk_v","8");
 }
 const catCache={};
-// 파일 제목/설명에 이런 낱말이 있으면 지오게서 훈련에 쓸 수 없는 자료로 보고 제외한다.
-// (옛 사진, 삽화·그림, 규격 도면, 지도, 로고, 박물관 전시물 등)
-const BAD_WORDS=/(drawing|draw|illustration|illustrated|sketch|painting|paint|engraving|lithograph|woodcut|cartoon|comic|caricature|poster|diagram|schematic|blueprint|technical|specification|spec\b|standard|font|typeface|lettering|glyph|numerals?|template|chart|graph|map\b|plan\b|logo|icon|symbol|clipart|vector|svg|scan|scanned|document|manuscript|postcard|stamp|banknote|coin|museum|replica|model|miniature|toy|patent|blank|sample|mockup|1[0-9]{3}|historic|historical|vintage|antique|archive|archival|old photo|black.and.white|b&w|monochrome|sepia)/i;
-// 파일 제목에 연도가 1900~1999로 보이면 오래된 자료로 간주
-const OLD_YEAR=/\b(1[0-9]{3})\b/;
+const PHOTO_META={}; // 사진 주소 -> {page, artist, lic} (정답 공개 뒤 출처 표시용)
+// ── 실사 판별 기준 ──
+// 1) 카메라로 찍은 JPEG만 사용: 카메라 정보(EXIF 제조사/모델)가 없는 파일은
+//    도면·글꼴 규격표·그림·스캔본일 가능성이 매우 높아 제외한다.
+//    (예: 대만 노면표시 카테고리의 글자 규격 도면은 전부 EXIF 없는 PNG였음)
+// 2) 촬영일이 2005년 이전이면 옛날 사진으로 보고 제외한다.
+// 3) 제목에 그림·도면·역사 자료를 뜻하는 낱말이 있으면 제외한다.
+const BAD_WORDS=/(drawing|illustration|sketch|painting|engraving|lithograph|woodcut|cartoon|caricature|poster|diagram|schematic|blueprint|specification|font|typeface|lettering|template|chart|logo|icon|clipart|vector|scan|postcard|stamp|banknote|museum|replica|model\b|miniature|toy|historic|vintage|antique|archive)/i;
 function usableCommonsFile(pg){
   const ii=pg.imageinfo&&pg.imageinfo[0];
   if(!ii)return false;
-  if(!/^image\/(jpeg|png|webp)/.test(ii.mime||""))return false;
-  if(/\.svg/i.test(ii.url||""))return false;
-  const title=(pg.title||"")+" "+(ii.url||"");
-  if(BAD_WORDS.test(title))return false;
-  const ym=title.match(OLD_YEAR);
-  if(ym){const y=parseInt(ym[1],10);if(y<2005)return false;} // 2005년 이전 자료 제외
-  // 너무 작은 이미지는 저품질/도면일 확률이 높음
-  if(ii.width&&ii.height&&(ii.width<640||ii.height<420))return false;
-  // 세로로 길쭉한 문서 스캔 형태 제외
-  if(ii.width&&ii.height&&(ii.height/ii.width>1.9))return false;
+  if(ii.mime!=="image/jpeg")return false;
+  if(!ii.width||!ii.height||ii.width<640||ii.height<420||ii.height/ii.width>1.9)return false;
+  if(BAD_WORDS.test(pg.title||""))return false;
+  const md={};(ii.commonmetadata||[]).forEach(m=>{md[m.name]=m.value;});
+  if(!md.Make&&!md.Model)return false;
+  const y=parseInt(String(md.DateTimeOriginal||md.DateTime||"").slice(0,4),10);
+  if(!(y>=2005&&y<=2030))return false; // 촬영일 없거나 2005년 이전이면 제외
   return true;
 }
 function commonsCategoryImages(cat){
   if(catCache[cat])return catCache[cat];
   const url="https://commons.wikimedia.org/w/api.php?action=query&format=json&origin=*"
-    +"&generator=categorymembers&gcmtype=file&gcmlimit=200"
+    +"&generator=categorymembers&gcmtype=file&gcmlimit=50"
     +"&gcmtitle="+encodeURIComponent("Category:"+cat)
-    +"&prop=imageinfo&iiprop=url|mime|size&iiurlwidth=1100";
+    +"&prop=imageinfo&iiprop=url|mime|size|commonmetadata|extmetadata&iiextmetadatafilter=Artist|LicenseShortName&iiurlwidth=1100";
   const p=fetch(url).then(r=>r.ok?r.json():null).then(j=>{
     const pages=j&&j.query&&j.query.pages?Object.values(j.query.pages):[];
-    return pages.filter(usableCommonsFile)
-      .map(pg=>pg.imageinfo[0].thumburl||pg.imageinfo[0].url);
+    return pages.filter(usableCommonsFile).map(pg=>{
+      const ii=pg.imageinfo[0],em=ii.extmetadata||{},u=ii.thumburl||ii.url;
+      PHOTO_META[u]={page:ii.descriptionurl||"",
+        artist:String((em.Artist&&em.Artist.value)||"").replace(/<[^>]*>/g,"").trim().slice(0,80),
+        lic:String((em.LicenseShortName&&em.LicenseShortName.value)||"").replace(/<[^>]*>/g,"").trim()};
+      return u;
+    });
   }).catch(()=>[]);
   catCache[cat]=p;return p;
 }
 function trickPhotoUrls(tr){
   if(tr.v.t==="flag")return Promise.resolve(["https://flagcdn.com/w320/"+tr.v.code+".png"]);
-  const cat=(typeof COMMONS!=="undefined")&&COMMONS[tr.id];
-  if(!cat)return Promise.resolve([]);
-  return commonsCategoryImages(cat);
+  const c=(typeof COMMONS!=="undefined")&&COMMONS[tr.id];
+  if(!c)return Promise.resolve([]);
+  // 한 트릭에 여러 카테고리(본 카테고리 + 검증된 하위 카테고리)를 연결할 수 있다
+  const cats=Array.isArray(c)?c:[c];
+  return Promise.all(cats.map(commonsCategoryImages)).then(lists=>[...new Set([].concat(...lists))]);
 }
-function loadImg(url){return new Promise((res,rej)=>{const im=new Image();
-  im.referrerPolicy="no-referrer";im.onload=()=>res(im);im.onerror=rej;im.src=url;});}
+// 커먼즈 파일명에는 촬영 장소가 들어 있는 경우가 많다(예: "Bollard à Eguisheim.jpg").
+// 사진을 받아서 blob: 임시 주소로 보여주면, 우클릭·새 탭 열기로 파일명을 볼 수 없다.
+const blobCache=new Map();
+function photoSrc(url){
+  if(/^(img\/|blob:|data:)/.test(url))return Promise.resolve(url);
+  if(blobCache.has(url))return blobCache.get(url);
+  const p=fetch(url,{mode:"cors",referrerPolicy:"no-referrer"})
+    .then(r=>{if(!r.ok)throw new Error("http "+r.status);return r.blob();})
+    .then(b=>URL.createObjectURL(b))
+    .catch(()=>url); // CORS 등으로 실패하면 원래 주소로라도 보여준다
+  blobCache.set(url,p);
+  if(blobCache.size>40){const k=blobCache.keys().next().value;const old=blobCache.get(k);blobCache.delete(k);
+    old.then(s=>{if(s.startsWith("blob:"))setTimeout(()=>URL.revokeObjectURL(s),60000);});}
+  return p;
+}
+function loadImg(url){return photoSrc(url).then(src=>new Promise((res,rej)=>{const im=new Image();
+  im.referrerPolicy="no-referrer";im.draggable=false;im.alt="";im.dataset.src=url;
+  im.onload=()=>res(im);im.onerror=rej;im.src=src;}));}
 // 같은 트릭이라도 매번 카테고리 안의 '다른 사진'을 뽑아 새 문제처럼 만든다.
 // (사진 한 장 = 사실상 문제 하나 → 체감 문제 수가 수천 개로 늘어남)
 const shownPhotos={}; // trickId -> 이번 세션에 이미 보여준 사진 URL 집합
@@ -429,6 +452,10 @@ function preparePhotos(tr){
   return loadImg(local).then(()=>[local]).catch(()=>
     trickPhotoUrls(tr).then(list=>{
       if(!list||!list.length)return [];
+      if(G&&G.mode==="daily"){ // 오늘의 챌린지: 모든 플레이어가 같은 사진을 보도록 고정된 순서
+        const arr=list.slice().sort(),k=hash32(G.seed+":"+tr.id)%arr.length;
+        return arr.slice(k).concat(arr.slice(0,k)).slice(0,8);
+      }
       const seen=shownPhotos[tr.id]||(shownPhotos[tr.id]=new Set());
       // 아직 안 나온 사진 우선, 다 봤으면 초기화하고 다시 전체에서 뽑기
       let fresh=list.filter(u=>!seen.has(u));
@@ -439,58 +466,96 @@ function preparePhotos(tr){
       return pick;
     }));
 }
-/* 이미지 확대/축소/이동 */
-let exZoom={s:1,x:0,y:0};
-function exApply(){const el=$("ex-inner");if(el)el.style.transform="translate("+exZoom.x+"px,"+exZoom.y+"px) scale("+exZoom.s+")";}
-function exReset(){exZoom={s:1,x:0,y:0};exApply();}
-function exScale(f){exZoom.s=Math.min(6,Math.max(1,exZoom.s*f));if(exZoom.s===1){exZoom.x=0;exZoom.y=0;}exApply();}
+/* ── 문제 사진 뷰어 ──
+   틀(#exhibit)을 사진 비율에 꼭 맞춰 만들고, 확대한 사진은 틀 밖으로 밀려 나가지 않게 이동 범위를 제한한다.
+   (휠·버튼·더블클릭·두 손가락으로 확대, 드래그로 이동, 1:1 버튼으로 처음 상태) */
+const EX={s:1,tx:0,ty:0,w:0,h:0,img:null};
+function exApply(anim){
+  const inner=$("ex-inner"),box=$("exhibit");if(!inner)return;
+  inner.classList.toggle("anim",!!anim);
+  inner.style.transform="translate("+EX.tx+"px,"+EX.ty+"px) scale("+EX.s+")";
+  box.classList.toggle("zoomed",EX.s>1.001);
+}
+function exClamp(){
+  if(!EX.w){EX.s=1;EX.tx=0;EX.ty=0;return;}
+  EX.s=Math.min(6,Math.max(1,EX.s));
+  // 확대된 사진의 가장자리가 틀 안쪽으로 들어오지 않게(=흰 여백이 보이지 않게) 이동 범위 제한
+  EX.tx=Math.min(0,Math.max(EX.w-EX.w*EX.s,EX.tx));
+  EX.ty=Math.min(0,Math.max(EX.h-EX.h*EX.s,EX.ty));
+}
+function exZoomAt(f,cx,cy,anim){
+  if(!EX.w)return;
+  const s0=EX.s,s1=Math.min(6,Math.max(1,s0*f));if(s1===s0)return;
+  EX.tx=cx-(cx-EX.tx)*(s1/s0);EX.ty=cy-(cy-EX.ty)*(s1/s0);EX.s=s1;
+  exClamp();exApply(anim);
+}
+function exReset(anim){EX.s=1;EX.tx=0;EX.ty=0;exApply(anim!==false);}
+function exFit(){
+  const box=$("exhibit"),inner=$("ex-inner");if(!box)return;
+  box.style.width="";box.style.height="";inner.style.width="";inner.style.height="";
+  const im=EX.img;
+  if(!im||!im.naturalWidth){EX.w=EX.h=0;exReset(false);return;}
+  // 카드는 내용물 크기에 따라 줄어들 수 있으므로, 화면 너비와 카드 최대 폭(560px, style.css)을 기준으로 계산
+  const card=box.parentElement,cs=getComputedStyle(card),stage=card.parentElement;
+  const pad=parseFloat(cs.paddingLeft)+parseFloat(cs.paddingRight);
+  const stageW=stage&&stage.clientWidth?stage.clientWidth-36:window.innerWidth;
+  const maxW=Math.max(160,Math.min(window.innerWidth*0.92,stageW,560)-pad);
+  const maxH=Math.max(220,window.innerHeight*0.56);
+  const fit=Math.min(maxW/im.naturalWidth,maxH/im.naturalHeight);
+  EX.w=Math.round(im.naturalWidth*fit);EX.h=Math.round(im.naturalHeight*fit);
+  box.style.width=EX.w+"px";box.style.height=EX.h+"px";
+  inner.style.width=EX.w+"px";inner.style.height=EX.h+"px";
+  im.style.width=EX.w+"px";im.style.height=EX.h+"px";
+  exReset(false);
+}
+function exShow(html){EX.img=null;$("ex-inner").innerHTML=html;exFit();}
+function exShowImage(im){
+  const inner=$("ex-inner");inner.innerHTML="";im.className="photo";inner.appendChild(im);
+  EX.img=im;exFit();
+  if(G)G.curPhoto=im.dataset.src||"";
+}
 function setExhibit(tr){
-  const inner=$("ex-inner"),hint=$("exhibit-hint");
-  exReset();
+  const hint=$("exhibit-hint");
   if(hint)hint.textContent=tt("exhibitHint");
   const mine=()=>G&&G.tricks[G.round]===tr;
-  // 모든 문제는 실사(위키미디어 커먼즈)만 사용한다.
-  // 코드로 그린 도식 일러스트는 출제에 쓰지 않는다.
-  // (국기는 실물 국기 이미지를 쓰므로 아래에서 별도 처리)
-  const strict=true;
-  if(strict){
-    inner.innerHTML='<div class="ex-loading"><div class="spinner"></div></div>';
-  }else{
-    // 그 외 카테고리: 즉시 도식 일러스트로 띄워 게임이 멈추지 않게 하고, 실사 오면 교체
-    inner.innerHTML=renderTrick(tr);
+  exShow('<div class="ex-loading"><div class="spinner"></div></div>');
+  const ok=im=>{if(!mine())return;exShowImage(im);
+    if(hint)hint.textContent="📷 Wikimedia Commons · "+tt("exhibitHint");};
+  // 배틀: 방장이 정해 둔 같은 사진을 두 사람 모두에게 보여준다(다른 문제로 바꾸지 않음)
+  const fixed=G&&G.fixed&&G.fixed[G.round];
+  if(fixed&&fixed.id===tr.id){
+    let tries=0;const go=()=>loadImg(fixed.url).then(ok).catch(()=>{
+      if(!mine())return;
+      if(++tries<4)setTimeout(go,1200);
+      else exShow('<div class="ex-loading dim" style="font-size:13px;padding:0 16px;text-align:center">'+esc(tt("photoFail"))+'</div>');
+    });go();return;
   }
   const showPhoto=urls=>{
     if(!mine())return;
-    if(!urls||!urls.length){ if(strict)skipTrick(tr); return; }
+    if(!urls||!urls.length){skipTrick(tr);return;}
     let i=0;const step=()=>{
       if(!mine())return;
-      if(i>=urls.length){ if(strict)skipTrick(tr); return; }
-      loadImg(urls[i]).then(im=>{
-        if(!mine())return;im.className="photo";inner.innerHTML="";inner.appendChild(im);
-        if(hint)hint.textContent="📷 Wikimedia Commons · "+tt("exhibitHint");
-      }).catch(()=>{i++;step();});
+      if(i>=urls.length){skipTrick(tr);return;}
+      loadImg(urls[i]).then(ok).catch(()=>{i++;step();});
     };step();
   };
   if(tr.v.t==="flag"){showPhoto(["https://flagcdn.com/w320/"+tr.v.code+".png"]);return;}
   preparePhotos(tr).then(showPhoto);
-  if(G&&G.round<4)preparePhotos(G.tricks[G.round+1]); // prefetch 다음 라운드
+  if(G&&G.round<4&&G.tricks[G.round+1])preparePhotos(G.tricks[G.round+1]).then(u=>{if(u&&u[0])loadImg(u[0]).catch(()=>{});}); // 다음 라운드 미리 받기
 }
-// 실사를 못 구한 언어 트릭을 실사 가능한 다른 트릭으로 교체 (무한루프 방지)
+// 사진을 못 구한 문제를 사진 있는 다른 문제로 교체 (무한 반복 방지)
 function skipTrick(failed){
   if(!G)return;
   if(!G.dead)G.dead=new Set();
   if(failed)G.dead.add(failed.id);
   const used=new Set(G.tricks.map(t=>t.id));
   const cands=POOL.filter(t=>!used.has(t.id)&&!G.dead.has(t.id));
-  for(let k=cands.length-1;k>0;k--){const j=Math.floor(Math.random()*(k+1));[cands[k],cands[j]]=[cands[j],cands[k]];}
+  // 오늘의 챌린지는 모두에게 같은 대체 문제가 나오도록 시드로 섞는다
+  const rnd=G.mode==="daily"?mulberry32(hash32(G.seed+":skip:"+G.round+":"+G.dead.size)):Math.random;
+  for(let k=cands.length-1;k>0;k--){const j=Math.floor(rnd()*(k+1));[cands[k],cands[j]]=[cands[j],cands[k]];}
   const pick=cands[0];
-  // 안전장치: 실사를 8번 연속 못 구하면(예: 오프라인) 게임이 멈추지 않도록
-  // 도식 이미지로라도 문제를 진행한다.
   if(!pick||G.dead.size>=8){
-    const tr=G.tricks[G.round];
-    $("ex-inner").innerHTML=renderTrick(tr);
-    const h=$("exhibit-hint");
-    if(h)h.textContent="⚠ 실사 사진을 불러오지 못했습니다 · "+tt("exhibitHint");
+    exShow('<div class="ex-loading dim" style="font-size:13px;padding:0 16px;text-align:center">'+esc(tt("photoFail"))+'</div>');
     return;
   }
   G.tricks[G.round]=pick;
@@ -499,41 +564,62 @@ function skipTrick(failed){
 }
 function submitGuess(auto){
   if(!G||G.submitted)return;
-  G.submitted=true;mapLocked=true;clearInterval(timerInt);
+  G.submitted=true;mapLocked=true;
   const tr=G.tricks[G.round];
   let d=null,sc=0,g=null;
   if(pendingGuess){g=[pendingGuess.lat,pendingGuess.lng];d=haversine(g,tr.tgt);sc=scoreFor(tr,d);}
   G.scores.push(sc);G.total+=sc;
+  G.last={g,d,sc,raw:pendingGuessRaw,auto};
+  if(G.mode==="battle"){
+    // 배틀: 내 답만 보내고, 정답은 두 사람 모두 끝났을 때 동시에 공개한다
+    battleSubmit(g,d,sc);
+    const b=$("btn-guess");b.disabled=true;b.textContent="⏳ "+tt("waitOpp");
+    return;
+  }
+  clearInterval(timerInt);
+  revealRound();
+}
+// 정답 위치·거리·해설을 보여준다
+function revealRound(){
+  const tr=G.tricks[G.round],L0=G.last||{};
   $("hud-score").textContent=G.total;
   // 사용자가 클릭한 세계(복사본)와 같은 쪽에 정답 마커를 그린다.
-  // 그래야 오른쪽으로 넘긴 지도에서 찍어도 결과선이 지구를 가로지르지 않는다.
-  const refLng=pendingGuessRaw?pendingGuessRaw.lng:tr.tgt[1];
+  const refLng=L0.raw?L0.raw.lng:tr.tgt[1];
   const tgtLng=tr.tgt[1]+Math.round((refLng-tr.tgt[1])/360)*360;
   const tgt=L.latLng(tr.tgt[0],tgtLng);
+  G.tgtLatLng=tgt;
   const tm=L.circleMarker(tgt,{radius:9,color:"#0b3d1e",weight:2,fillColor:"#5EBF82",fillOpacity:1});
   resultLayers.push(tm.addTo(map));
   tm.bindTooltip(tr.a[LANG]||tr.a.ko,{permanent:true,direction:"top",offset:[0,-10]});
   $("mapbox").classList.add("expanded");
-  if(g){const from=pendingGuessRaw||L.latLng(g[0],g[1]);
+  if(L0.g){const from=L0.raw||L.latLng(L0.g[0],L0.g[1]);
     const line=L.polyline([from,tgt],{color:"#FFC24B",weight:3,dashArray:"7 7"});
     resultLayers.push(line.addTo(map));
     setTimeout(()=>{map.invalidateSize();map.fitBounds(line.getBounds().pad(0.45));},330);
   }else setTimeout(()=>{map.invalidateSize();map.setView(tgt,4);},330);
   const b=$("btn-guess");b.disabled=true;b.textContent="🔍 "+(tr.a[LANG]||tr.a.ko);
-  if(G.mode==="battle")battleSubmit(g,d,sc);
-  showRoundResult(tr,d,sc,auto);
+  showRoundResult(tr,L0.d,L0.sc||0);
 }
-function showRoundResult(tr,d,sc,auto){
+function showRoundResult(tr,d,sc){
   $("dock-answer").textContent=tr.a[LANG]||tr.a.ko;
   $("dock-points").textContent=sc.toLocaleString();
   $("dock-dist").textContent=d==null?tt("timeout"):fmtKm(d)+" "+tt("distKm");
   $("dock-explain").textContent=tr.e;
   $("dock-bar").style.width="0";
   requestAnimationFrame(()=>requestAnimationFrame(()=>{$("dock-bar").style.width=(sc/5000*100)+"%";}));
+  // 사진 출처: 라운드가 끝난 뒤에만 보여준다(파일 설명에 장소가 적혀 있어 힌트가 되므로)
+  const cr=$("dock-credit"),fx=G.fixed&&G.fixed[G.round];
+  const meta=fx&&fx.id===tr.id?fx:(PHOTO_META[G.curPhoto]||null);
+  if(meta&&meta.page){
+    cr.href=meta.page;
+    cr.textContent="📷 "+tt("photoBy")+": "+(meta.artist||"Wikimedia Commons")+(meta.lic?" · "+meta.lic:"")+" · Wikimedia Commons";
+    cr.classList.remove("hidden");
+  }else cr.classList.add("hidden");
   const oppEl=$("dock-opp");
-  if(G.mode==="battle"){oppEl.classList.remove("hidden");oppEl.textContent="\u23f3 "+tt("waiting");updateBattleRoundOpp();}
+  if(G.mode==="battle"){oppEl.classList.remove("hidden");oppEl.textContent="⏳ "+tt("waitOpp");updateBattleRoundOpp();}
   else oppEl.classList.add("hidden");
-  $("dock-next").textContent=G.round===4?tt("seeResult"):tt("next");
+  const nx=$("dock-next");nx.disabled=false;
+  nx.textContent=G.mode==="battle"?(G.round===4?tt("readyFinal"):tt("readyNext")):(G.round===4?tt("seeResult"):tt("next"));
   $("dock").classList.remove("hidden");
 }
 function nextRound(){
@@ -614,65 +700,174 @@ function loadDailyBoard(){
   }).catch(()=>{});
 }
 
-/* ── 1대1 배틀 ── */
-let B=null;
+/* ── 1대1 배틀 ──
+   두 사람이 '서버 시계' 하나를 기준으로 같은 순간에 시작하고, 같은 순간에 끝난다.
+   - 방장이 문제 5개와 사진을 정해 방(rooms/CODE/rounds)에 저장 → 두 사람 모두 같은 문제·같은 사진
+   - 라운드 상태(phase): guess(답 고르기) → result(정답 공개) → 다음 라운드 … → final
+   - 시작 시각 t0, 마감 시각 tEnd, 결과 화면 마감 resultEnd 를 서버 시간으로 저장하고
+     두 사람 모두 Firebase 서버 시간(.info/serverTimeOffset)으로 남은 시간을 계산한다
+   - 상태 전환(라운드 종료·다음 라운드)은 방장만 기록해서 두 화면이 어긋나지 않는다 */
+let B=null,srvOffset=0;
+const ROUND_MS=40000,COUNTDOWN_MS=3500,AFTER_FIRST_MS=15000,RESULT_MS=15000;
+function srvNow(){return Date.now()+srvOffset;}
 function roomCode(){const A="ABCDEFGHJKLMNPQRSTUVWXYZ";let c="";for(let i=0;i<5;i++)c+=A[Math.floor(Math.random()*A.length)];return c;}
+function setWait(title,sub){$("wait-title").textContent=title;$("wait-sub").textContent=sub||"";}
 function createRoom(){
   if(needOnline())return;
   const code=roomCode(),seed=Math.floor(Math.random()*2**31);
   const ref=db.ref("rooms/"+code);
-  ref.set({seed,status:"waiting",round:0,roundStart:0,
-    pHost:{uid,name:NICK||"HOST"},created:firebase.database.ServerValue.TIMESTAMP})
+  ref.set({seed,status:"waiting",pHost:{uid,name:NICK||"HOST"},created:firebase.database.ServerValue.TIMESTAMP})
   .then(()=>{
-    B={code,ref,isHost:true,opp:null,oppTotal:0,lastRound:0};
-    ref.child("pHost").onDisconnect().remove();
+    B={code,ref,isHost:true,opp:null,oppTotal:0};
+    ref.onDisconnect().remove(); // 방장이 나가면 방 자체를 정리
     $("room-code-view").textContent=code;
+    setWait(tt("waiting"),tt("shareCode"));
     show("scr-wait");
     attachRoom();
-  }).catch(()=>toast("Firebase error"));
+  }).catch(err=>toast("Firebase: "+((err&&err.code)||err)));
 }
 function joinRoom(){
   if(needOnline())return;
   const code=$("join-code").value.trim().toUpperCase();
   if(code.length!==5)return;
-  const ref=db.ref("rooms/"+code);
+  const ref=db.ref("rooms/"+code),err=$("lobby-err");
+  const fail=m=>{err.textContent=m;err.classList.remove("hidden");};
   ref.once("value").then(sn=>{
     const r=sn.val();
-    const err=$("lobby-err");
-    if(!r){err.textContent=tt("noRoom");err.classList.remove("hidden");return;}
-    if(r.pGuest){err.textContent=tt("roomFull");err.classList.remove("hidden");return;}
-    err.classList.add("hidden");
-    B={code,ref,isHost:false,opp:null,oppTotal:0,lastRound:0};
-    ref.update({pGuest:{uid,name:NICK||"GUEST"},status:"playing",roundStart:Date.now()})
-      .then(()=>{ref.child("pGuest").onDisconnect().remove();attachRoom();});
-  });
+    if(!r||!r.pHost)return fail(tt("noRoom"));
+    if(r.status!=="waiting")return fail(tt("roomFull"));
+    // 동시에 두 명이 들어오는 경우를 막기 위해 트랜잭션으로 자리 차지
+    return ref.child("pGuest").transaction(cur=>{if(cur&&cur.uid!==uid)return;return{uid,name:NICK||"GUEST"};})
+      .then(res=>{
+        if(!res.committed)return fail(tt("roomFull"));
+        err.classList.add("hidden");
+        B={code,ref,isHost:false,opp:null,oppTotal:0};
+        ref.child("pGuest").onDisconnect().remove();
+        $("room-code-view").textContent=code;
+        setWait(tt("preparing"),"");
+        show("scr-wait");
+        ref.update({status:"preparing"});
+        attachRoom();
+      });
+  }).catch(e=>fail("Firebase: "+((e&&e.code)||e)));
 }
 function attachRoom(){
+  B.offRef=db.ref(".info/serverTimeOffset");
+  B.offHandler=B.offRef.on("value",s=>{srvOffset=s.val()||0;});
   B.handler=B.ref.on("value",sn=>{
+    if(!B)return;
     const r=sn.val();
-    if(!r){leaveBattle(true);return;}
-    B.room=r;
-    const meP=B.isHost?r.pHost:r.pGuest,opP=B.isHost?r.pGuest:r.pHost;
-    if(r.status==="playing"&&!B.started){
-      B.started=true;B.opp=opP;
-      startGame("battle",r.seed);
-      $("hud-opp-name").textContent=(opP&&opP.name)||"?";
+    if(!r){
+      // 최종 결과를 보고 있을 때 상대가 먼저 나가도 내 결과 화면은 그대로 둔다
+      if(B.finished){B.ref.off("value",B.handler);clearInterval(B.tick);return;}
+      if(B.started)toast(tt("oppLeft"));
+      leaveBattle(true);return;
     }
-    if(B.started&&!opP&&r.status==="playing"){toast(tt("oppLeft"));leaveBattle();return;}
-    if(B.started){
-      if(opP)$("hud-opp-name").textContent=opP.name;
-      updateOppScore(r);
-      if(r.round>G.round&&r.round<=4){ // 라운드 넘어감
-        G.round=r.round;startRound();
-      }
-      if(G.submitted)updateBattleRoundOpp();
+    B.room=r;
+    const opP=B.isHost?r.pGuest:r.pHost;
+    if(opP)B.opp=opP;
+    if(B.started&&!opP&&r.phase!=="final"){toast(tt("oppLeft"));leaveBattle();return;}
+    if(r.status==="preparing"){
+      setWait(tt("preparing"),opP?("🆚 "+opP.name):"");
+      if(B.isHost&&!B.preparing)hostPrepare(r);
+    }
+    if(r.status==="playing"&&r.rounds){
+      if(!B.started){B.started=true;startBattleGame(r);}
+      battleSync(r);
     }
   });
+  if(B.isHost)B.tick=setInterval(hostTick,250);
+}
+// 방장: 문제 5개 + 각 문제의 사진을 정해서 방에 저장 (사진이 실제로 열리는지 확인한 것만)
+async function hostPrepare(r){
+  B.preparing=true;
+  try{
+    const first=pickTricks(mulberry32(r.seed>>>0),false);
+    const backup=POOL.slice();shuffle(backup,mulberry32((r.seed^0x5bd1e995)>>>0));
+    const used=new Set(),rounds=[];let bi=0;
+    const nextBackup=()=>{while(bi<backup.length){const t=backup[bi++];if(!used.has(t.id))return t;}return null;};
+    for(let i=0;i<5;i++){
+      let tr=first[i],got=null;
+      for(let tries=0;tries<10&&tr&&!got;tries++){
+        if(used.has(tr.id)){tr=nextBackup();continue;}
+        got=await pickLoadablePhoto(tr);
+        if(!got){used.add(tr.id);tr=nextBackup();}
+      }
+      if(!got)throw new Error("no photo");
+      used.add(tr.id);rounds.push(Object.assign({id:tr.id},got));
+    }
+    if(!B)return;
+    const t0=srvNow()+COUNTDOWN_MS+1500;
+    await B.ref.update({rounds,status:"playing",round:0,phase:"guess",t0,tEnd:t0+ROUND_MS,cut:false});
+  }catch(e){
+    B&&(B.preparing=false);
+    toast("배틀 준비 실패: 사진을 불러오지 못했어요. 다시 시도해 주세요.");
+  }
+}
+async function pickLoadablePhoto(tr){
+  const urls=tr.v.t==="flag"?["https://flagcdn.com/w320/"+tr.v.code+".png"]:await preparePhotos(tr);
+  for(const u of (urls||[]).slice(0,4)){
+    try{await loadImg(u);const m=PHOTO_META[u]||{};return{url:u,page:m.page||"",artist:m.artist||"",lic:m.lic||""};}catch(e){}
+  }
+  return null;
+}
+function startBattleGame(r){
+  const tricks=r.rounds.map(x=>TRICKS.find(t=>t.id===x.id));
+  if(tricks.some(t=>!t)){toast("두 사람의 게임 버전이 달라요. 새로고침(Ctrl+Shift+R) 후 다시 시도해 주세요.");leaveBattle();return;}
+  G={mode:"battle",seed:r.seed,round:-1,total:0,scores:[],submitted:true,tricks,fixed:r.rounds};
+  r.rounds.forEach(x=>loadImg(x.url).catch(()=>{})); // 사진 5장 미리 받아 두기 → 시작 순간 바로 표시
+  show("scr-game");
+  if(!map)initMap();
+  setTimeout(()=>map.invalidateSize(),60);
+  $("hud-opp-wrap").classList.remove("hidden");
+  $("hud-timer").classList.remove("hidden");
+  $("hud-opp-name").textContent=(B.opp&&B.opp.name)||"?";
+  $("dock").classList.add("hidden");$("ov-final").classList.add("hidden");
+  startBattleTimer();
+}
+function battleSync(r){
+  const key=r.round+"|"+r.phase;
+  if(B.shown!==key){
+    B.shown=key;
+    if(r.phase==="guess")beginBattleRound(r);
+    else if(r.phase==="result"){
+      if(G.round!==r.round)beginBattleRound(r,true);
+      if(!G.submitted)submitGuess(true); // 시간이 끝났는데 아직 안 냈으면 지금 찍힌 핀으로 제출
+      revealRound();
+    }else if(r.phase==="final"){
+      if(G.round===r.round&&!G.submitted)submitGuess(true);
+      B.finished=true;finishGame();
+    }
+  }
+  updateOppScore(r);
+  if(r.phase==="result"){updateBattleRoundOpp();drawOppPin(r);}
+}
+function beginBattleRound(r,silent){
+  G.round=r.round;G.submitted=false;G.last=null;B.oppDrawn=false;
+  const tr=G.tricks[G.round];
+  $("hud-round").textContent=G.round+1;
+  $("hud-score").textContent=G.total;
+  $("exhibit-cat").textContent="EXHIBIT · "+(CATS[tr.cat][LANG]||CATS[tr.cat].en);
+  resetMapForRound();
+  mapLocked=true; // 시작 신호 전에는 핀을 꽂을 수 없다
+  clearTimeout(B.revealT);
+  if(silent)return;
+  showCountdown(r);
+  B.revealT=setTimeout(()=>{
+    if(!G||G.round!==r.round||G.submitted)return;
+    mapLocked=false;setExhibit(tr);
+  },Math.max(0,r.t0-srvNow()));
+}
+function showCountdown(r){
+  const left=Math.max(1,Math.ceil((r.t0-srvNow())/1000));
+  exShow('<div class="ex-countdown"><b id="ex-count">'+left+'</b><small>ROUND '+(r.round+1)+' · '+esc(tt("startsIn"))+'</small></div>');
 }
 function battleGuesses(r,round){return (r.guesses&&r.guesses[round])||{};}
+// 상대 점수: 정답이 공개된 라운드까지만 합산 (진행 중인 라운드 점수로 힌트를 얻지 않도록)
 function updateOppScore(r){
-  if(!B.opp)return;let sum=0;
-  for(let i=0;i<5;i++){const g=battleGuesses(r,i)[B.opp.uid];if(g)sum+=g.score;}
+  if(!B||!B.opp)return;let sum=0;
+  const upto=r.phase==="guess"?r.round-1:r.round;
+  for(let i=0;i<=upto;i++){const g=battleGuesses(r,i)[B.opp.uid];if(g)sum+=g.score;}
   B.oppTotal=sum;$("hud-opp-score").textContent=sum;
 }
 function battleSubmit(g,d,sc){
@@ -680,15 +875,46 @@ function battleSubmit(g,d,sc){
   B.ref.child("guesses/"+G.round+"/"+uid).set({lat:g?g[0]:null,lng:g?g[1]:null,d:d==null?null:Math.round(d),score:sc,name:NICK||"?"});
 }
 function updateBattleRoundOpp(){
-  if(!B||!B.room||!B.opp)return;
+  if(!B||!B.room||!B.opp||!G)return;
   const og=battleGuesses(B.room,G.round)[B.opp.uid];
   const el=$("dock-opp");
-  if(og){el.textContent="🆚 "+(B.opp.name||"?")+" — "+og.score.toLocaleString()+tt("pts")+(og.d!=null?" · "+fmtKm(og.d)+" km":"");}
+  if(og)el.textContent="🆚 "+(B.opp.name||"?")+" — "+og.score.toLocaleString()+tt("pts")+(og.d!=null?" · "+fmtKm(og.d)+" km":" · "+tt("timeout"));
 }
+// 정답 공개 때 상대가 찍은 위치도 지도에 표시
+function drawOppPin(r){
+  if(B.oppDrawn||!B.opp||!G.tgtLatLng)return;
+  const og=battleGuesses(r,G.round)[B.opp.uid];
+  if(!og||og.lat==null)return;
+  B.oppDrawn=true;
+  const lng=og.lng+Math.round((G.tgtLatLng.lng-og.lng)/360)*360;
+  const p=L.latLng(og.lat,lng);
+  const m=L.circleMarker(p,{radius:7,color:"#7a1020",weight:2,fillColor:"#FF5D6C",fillOpacity:1}).addTo(map);
+  m.bindTooltip(B.opp.name||tt("oppPin"),{direction:"top",offset:[0,-8]});
+  resultLayers.push(m);
+  resultLayers.push(L.polyline([p,G.tgtLatLng],{color:"#FF5D6C",weight:2,dashArray:"4 6"}).addTo(map));
+}
+// '다음 라운드 준비' → 두 사람 모두 준비되거나 결과 화면 시간이 끝나면 방장이 동시에 다음 라운드를 시작
 function battleNext(){
-  if(G.round===4){finishGame();return;}
-  if(B.isHost){B.ref.update({round:G.round+1,roundStart:Date.now()});}
-  else toast("⏳ Host…");
+  if(!B||!G)return;
+  B.ref.child("ready/"+G.round+"/"+uid).set(true);
+  const nx=$("dock-next");nx.disabled=true;nx.textContent="⏳ "+tt("readyWait");
+}
+function hostTick(){
+  if(!B||!B.isHost||B.busy||!B.room||B.room.status!=="playing")return;
+  const r=B.room,now=srvNow();
+  const ids=[r.pHost&&r.pHost.uid,r.pGuest&&r.pGuest.uid].filter(Boolean);
+  const upd=o=>{B.busy=true;B.ref.update(o).then(()=>{B.busy=false;},()=>{B.busy=false;});};
+  if(r.phase==="guess"){
+    const gs=battleGuesses(r,r.round),n=ids.filter(id=>gs[id]).length;
+    if(n>=2||now>=r.tEnd+1200)upd({phase:"result",resultEnd:now+RESULT_MS});
+    else if(n===1&&!r.cut&&r.tEnd-now>AFTER_FIRST_MS)upd({tEnd:now+AFTER_FIRST_MS,cut:true}); // 한 명이 먼저 내면 남은 사람은 15초
+  }else if(r.phase==="result"){
+    const rd=(r.ready&&r.ready[r.round])||{};
+    if(ids.every(id=>rd[id])||now>=r.resultEnd){
+      if(r.round>=4)upd({phase:"final"});
+      else{const t0=now+COUNTDOWN_MS;upd({round:r.round+1,phase:"guess",t0,tEnd:t0+ROUND_MS,cut:false});}
+    }
+  }
 }
 function battleFinish(){
   const opp=B&&B.opp;
@@ -697,25 +923,40 @@ function battleFinish(){
   let verdict=G.total>o?`<span class="win">${tt("win")}</span>`:(G.total<o?`<span class="lose">${tt("lose")}</span>`:tt("draw"));
   el.innerHTML=`${verdict}<br>${esc(NICK||"ME")} ${G.total.toLocaleString()} : ${o.toLocaleString()} ${esc(opp?opp.name:"?")}`;
 }
+// 남은 시간 표시: 모두 서버 시간 기준이라 두 화면의 숫자가 같다
 function startBattleTimer(){
   clearInterval(timerInt);
   const el=$("hud-timer");
   timerInt=setInterval(()=>{
-    const start=(B&&B.room&&B.room.roundStart)||Date.now();
-    const remain=Math.max(0,40-Math.floor((Date.now()-start)/1000));
-    el.textContent=remain;
-    el.classList.toggle("low",remain<=10);
-    if(remain<=0&&!G.submitted)submitGuess(true);
-  },250);
+    if(!B||!B.room||!G)return;
+    const r=B.room,now=srvNow();
+    if(r.phase==="guess"){
+      if(now<r.t0){
+        const left=Math.max(1,Math.ceil((r.t0-now)/1000));
+        el.textContent=left;el.classList.remove("low");
+        const c=document.getElementById("ex-count");if(c)c.textContent=left;
+        return;
+      }
+      const remain=Math.max(0,Math.ceil((r.tEnd-now)/1000));
+      el.textContent=remain;el.classList.toggle("low",remain<=10);
+      if(now>=r.tEnd&&!G.submitted)submitGuess(true);
+    }else if(r.phase==="result"){
+      const remain=Math.max(0,Math.ceil((r.resultEnd-now)/1000));
+      el.textContent=remain;el.classList.remove("low");
+    }
+  },200);
 }
 function leaveBattle(silent){
   if(B){
-    try{B.ref.off("value",B.handler);
-      B.ref.child(B.isHost?"pHost":"pGuest").remove();
-      if(B.isHost&&(!B.room||B.room.status==="waiting"))B.ref.remove();
+    try{
+      B.ref.off("value",B.handler);
+      if(B.offRef)B.offRef.off("value",B.offHandler);
+      clearInterval(B.tick);clearTimeout(B.revealT);
+      if(B.isHost)B.ref.remove();
+      else B.ref.child("pGuest").remove();
     }catch(e){}
   }
-  B=null;clearInterval(timerInt);
+  B=null;clearInterval(timerInt);G=null;
   show("scr-home");
 }
 
@@ -764,17 +1005,30 @@ function renderStudy(cat){
 }
 
 /* ═══════════ 이벤트 바인딩 ═══════════ */
+// 닉네임 입력: 1~10글자, 입력하는 동안 "3 / 10"처럼 글자 수를 보여준다
+function nickLen(s){return [...s].length;}
 function askNick(force){
-  if(NICK&&!force)return true;
-  const n=prompt(tt("nickPrompt"),NICK||"");
-  if(n===null)return !!NICK;
-  NICK=n.trim().slice(0,10)||NICK||"Player";
-  localStorage.setItem("plk_nick",NICK);
-  applyI18n();return true;
+  if(NICK&&!force)return Promise.resolve(true);
+  return new Promise(resolve=>{
+    const ov=$("ov-nick"),inp=$("nick-input"),cnt=$("nick-count"),help=document.querySelector(".nick-help");
+    const upd=()=>{const n=nickLen(inp.value.trim());cnt.textContent=n+" / 10";help.classList.remove("err");$("nick-rule").textContent=tt("nickRule");};
+    const close=ok=>{ov.classList.add("hidden");inp.oninput=null;inp.onkeydown=null;resolve(ok);};
+    inp.value=NICK||"";upd();inp.oninput=upd;
+    const save=()=>{
+      const v=[...inp.value.trim()].slice(0,10).join("");
+      if(!v){help.classList.add("err");$("nick-rule").textContent=tt("nickEmpty");inp.focus();return;}
+      NICK=v;try{localStorage.setItem("plk_nick",NICK);}catch(e){}
+      applyI18n();close(true);
+    };
+    $("nick-ok").onclick=save;
+    $("nick-cancel").onclick=()=>{if(!NICK){NICK="Player";try{localStorage.setItem("plk_nick",NICK);}catch(e){}applyI18n();}close(!!NICK);};
+    inp.onkeydown=e=>{if(e.key==="Enter"&&!e.isComposing)save();if(e.key==="Escape")$("nick-cancel").onclick();};
+    ov.classList.remove("hidden");setTimeout(()=>{inp.focus();inp.select();},30);
+  });
 }
 $("btn-practice").onclick=()=>startGame("practice",Math.floor(Math.random()*2**31));
-$("btn-daily").onclick=()=>{askNick();startGame("daily",dailySeed());};
-$("btn-battle").onclick=()=>{askNick();show("scr-lobby");};
+$("btn-daily").onclick=()=>{askNick().then(()=>startGame("daily",dailySeed()));};
+$("btn-battle").onclick=()=>{askNick().then(()=>show("scr-lobby"));};
 $("btn-study").onclick=()=>{buildStudy();show("scr-study");};
 $("btn-nick").onclick=()=>askNick(true);
 $("btn-lang").onclick=()=>$("lang-menu").classList.toggle("hidden");
@@ -798,18 +1052,42 @@ $("study-filter").onchange=e=>renderStudy(e.target.value);
 window.addEventListener("resize",()=>map&&map.invalidateSize());
 $("join-code").addEventListener("keydown",e=>{if(e.key==="Enter")joinRoom();});
 
-/* exhibit zoom: 휠 확대 + 드래그 이동 + 버튼 */
+/* 문제 사진 조작: 휠·더블클릭·두 손가락 확대, 드래그 이동, ＋/－/1:1 버튼 */
 (function(){
-  const ex=$("exhibit");if(!ex)return;let drag=null;
-  ex.addEventListener("wheel",e=>{e.preventDefault();exScale(e.deltaY<0?1.25:0.8);},{passive:false});
-  ex.addEventListener("pointerdown",e=>{if(exZoom.s<=1)return;e.preventDefault();
-    drag={x:e.clientX-exZoom.x,y:e.clientY-exZoom.y};try{ex.setPointerCapture(e.pointerId);}catch(_){}});
-  ex.addEventListener("pointermove",e=>{if(!drag)return;exZoom.x=e.clientX-drag.x;exZoom.y=e.clientY-drag.y;exApply();});
-  ex.addEventListener("pointerup",()=>drag=null);
-  ex.addEventListener("pointercancel",()=>drag=null);
-  $("ex-plus").onclick=()=>exScale(1.4);
-  $("ex-minus").onclick=()=>exScale(0.7);
-  $("ex-reset").onclick=exReset;
+  const box=$("exhibit");if(!box)return;
+  const pts=new Map();let last=null,pinch=null;
+  const rel=e=>{const r=box.getBoundingClientRect();return[e.clientX-r.left,e.clientY-r.top];};
+  const onCtrl=e=>!!(e.target.closest&&e.target.closest(".ex-ctrl"));
+  box.addEventListener("wheel",e=>{if(!EX.w)return;e.preventDefault();const[x,y]=rel(e);exZoomAt(e.deltaY<0?1.2:1/1.2,x,y,false);},{passive:false});
+  // 버튼 위에서 누른 것은 드래그로 가로채지 않는다 → ＋/－/1:1 버튼이 확대 중에도 정상 동작
+  box.addEventListener("pointerdown",e=>{
+    if(onCtrl(e)||!EX.w)return;
+    try{box.setPointerCapture(e.pointerId);}catch(_){}
+    pts.set(e.pointerId,rel(e));
+    if(pts.size===2){const[a,b]=[...pts.values()];pinch=Math.hypot(a[0]-b[0],a[1]-b[1]);}
+    last=rel(e);box.classList.add("dragging");
+  });
+  box.addEventListener("pointermove",e=>{
+    if(!pts.has(e.pointerId))return;
+    const p=rel(e);pts.set(e.pointerId,p);
+    if(pts.size>=2){
+      const[a,b]=[...pts.values()],d=Math.hypot(a[0]-b[0],a[1]-b[1]);
+      if(pinch>0)exZoomAt(d/pinch,(a[0]+b[0])/2,(a[1]+b[1])/2,false);
+      pinch=d;return;
+    }
+    if(last&&EX.s>1){EX.tx+=p[0]-last[0];EX.ty+=p[1]-last[1];exClamp();exApply(false);}
+    last=p;
+  });
+  const up=e=>{pts.delete(e.pointerId);if(pts.size<2)pinch=null;last=pts.size?[...pts.values()][0]:null;if(!pts.size)box.classList.remove("dragging");};
+  box.addEventListener("pointerup",up);box.addEventListener("pointercancel",up);
+  box.addEventListener("dblclick",e=>{if(onCtrl(e)||!EX.w)return;const[x,y]=rel(e);if(EX.s>1.001)exReset();else exZoomAt(2.5,x,y,true);});
+  // 우클릭 저장·끌어서 새 탭 열기 막기 (사진 파일명에 장소가 적혀 있는 경우가 있어서)
+  box.addEventListener("contextmenu",e=>e.preventDefault());
+  box.addEventListener("dragstart",e=>e.preventDefault());
+  $("ex-plus").onclick=()=>exZoomAt(1.5,EX.w/2,EX.h/2,true);
+  $("ex-minus").onclick=()=>exZoomAt(1/1.5,EX.w/2,EX.h/2,true);
+  $("ex-reset").onclick=()=>exReset(true);
+  let rt=null;window.addEventListener("resize",()=>{clearTimeout(rt);rt=setTimeout(()=>{if(EX.img)exFit();},120);});
 })();
 
 /* init */
